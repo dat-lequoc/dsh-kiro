@@ -7,19 +7,21 @@
  * scanner that holds back only a tail short enough to be a partial marker, so
  * markers split across frames are still recognized without delaying output.
  *
- * The stream carries no finish event and no token counts: the frame sequence
- * simply ends. The terminal reason is therefore derived — `tool-calls` when
- * the model opened any tool call, `stop` otherwise, and `EMPTY_RESPONSE` for a
- * stream that produced no content at all.
+ * The stream carries no finish event: the frame sequence simply ends. Its
+ * terminal `metadataEvent` does carry exact, disjoint token counters. The
+ * finish reason is derived — `tool-calls` when the model opened any tool call,
+ * `stop` otherwise, and `EMPTY_RESPONSE` for a stream with no content at all.
  *
  * @module dsh-kiro/translate
  */
 
 import { CallId, EMPTY_RESPONSE_CODE, LlmError } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, FinishReason, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, FinishReason, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
 import type {
   WireAssistantResponseEvent,
   WireFrame,
+  WireMetadataEvent,
+  WireTokenUsage,
   WireToolUseEvent,
 } from './types.ts'
 
@@ -170,12 +172,47 @@ function parsePayload<T>(frame: WireFrame): T {
   }
 }
 
+/** Accept one provider counter only when it is safe for DSH's usage schema. */
+function tokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined
+}
+
+/**
+ * Convert Kiro's disjoint token buckets to DSH's native usage vocabulary.
+ * Missing counters are zero, matching Kiro CLI's own stream parser. A present
+ * malformed counter rejects the event instead of publishing misleading data.
+ */
+function tokenUsageOf(value: WireTokenUsage | undefined): TokenUsage | undefined {
+  if (value === undefined || typeof value !== 'object' || value === null) return undefined
+  const fields = [
+    value.uncachedInputTokens,
+    value.outputTokens,
+    value.cacheReadInputTokens,
+    value.cacheWriteInputTokens,
+  ]
+  if (fields.some(field => field !== undefined && tokenCount(field) === undefined)) return undefined
+  const inputTokens = tokenCount(value.uncachedInputTokens) ?? 0
+  const outputTokens = tokenCount(value.outputTokens) ?? 0
+  const cacheReadTokens = tokenCount(value.cacheReadInputTokens) ?? 0
+  const cacheWriteTokens = tokenCount(value.cacheWriteInputTokens) ?? 0
+  if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0) {
+    return undefined
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    ...cacheReadTokens > 0 ? { cacheReadTokens } : {},
+    ...cacheWriteTokens > 0 ? { cacheWriteTokens } : {},
+  }
+}
+
 /**
  * Translate decoded frames into harness chunks.
  * @param frames - decoded event-stream frames in arrival order.
  * @returns deltas as they arrive, then every `block-end`, then one terminal
- *   `finish`. No `usage` chunk is emitted: the operation reports consumed
- *   account credits rather than token counts.
+ *   exact terminal `usage` when supplied by Kiro, and one `finish`.
  * @throws `LlmError` for an in-band service exception frame or a malformed payload.
  */
 export async function* translate(frames: AsyncIterable<WireFrame>): AsyncGenerator<StreamChunk> {
@@ -185,6 +222,7 @@ export async function* translate(frames: AsyncIterable<WireFrame>): AsyncGenerat
   let nextIndex = 0
   let textBlock: OpenBlock | undefined
   let reasoningBlock: OpenBlock | undefined
+  let usage: TokenUsage | undefined
 
   function open(kind: OpenBlock['kind']): OpenBlock {
     const block: OpenBlock = { index: nextIndex++, kind, text: '' }
@@ -245,10 +283,16 @@ export async function* translate(frames: AsyncIterable<WireFrame>): AsyncGenerat
         }
         break
       }
+      case 'metadataEvent': {
+        const event = parsePayload<WireMetadataEvent>(frame)
+        // Kiro treats streamed token metadata as last-write-wins.
+        usage = tokenUsageOf(event.tokenUsage) ?? usage
+        break
+      }
       default:
-        // contextUsageEvent, meteringEvent, followupPrompt, and future event
-        // types carry no harness vocabulary; the protocol grows by adding
-        // cases here, never by surfacing unknown frames as content.
+        // contextUsageEvent, meteringEvent, followupPrompt, and future events
+        // carry no additional harness vocabulary; the protocol grows by
+        // adding cases here, never by surfacing unknown frames as content.
         break
     }
   }
@@ -268,5 +312,6 @@ export async function* translate(frames: AsyncIterable<WireFrame>): AsyncGenerat
           code: EMPTY_RESPONSE_CODE,
         },
       }
+  if (usage !== undefined) yield { type: 'usage', usage }
   yield { type: 'finish', reason }
 }

@@ -4,7 +4,7 @@ import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { decodeFrames } from '../src/eventstream.ts'
 import { TextRouter, translate } from '../src/translate.ts'
 import type { WireFrame } from '../src/types.ts'
-import { chunked, frame, join, textFrame, toolFrame } from './frames.ts'
+import { chunked, frame, join, metadataFrame, textFrame, toolFrame } from './frames.ts'
 
 /** Wrap raw frames as the async iterable the translator consumes. */
 async function* framesOf(...produced: WireFrame[]): AsyncGenerator<WireFrame> {
@@ -166,6 +166,52 @@ describe('translate', () => {
       { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'tool-1', name: 'a', arguments: '{}' } },
       { type: 'block-end', index: 1, block: { type: 'tool-call', id: 'tool-2', name: 'b', arguments: '{}' } },
     ])
+  })
+
+  it('emits Kiro token metadata as disjoint DSH usage before finish', async () => {
+    const chunks = await run(join(
+      textFrame('Done.'),
+      metadataFrame({
+        uncachedInputTokens: 120,
+        outputTokens: 18,
+        cacheReadInputTokens: 880,
+        cacheWriteInputTokens: 25,
+      }),
+    ))
+    expect(chunks.at(-2)).toEqual({
+      type: 'usage',
+      usage: {
+        inputTokens: 120,
+        outputTokens: 18,
+        cacheReadTokens: 880,
+        cacheWriteTokens: 25,
+      },
+    })
+    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+  })
+
+  it('uses the latest valid token metadata and omits empty cache buckets', async () => {
+    const chunks = await run(join(
+      textFrame('Done.'),
+      metadataFrame({ uncachedInputTokens: 10, outputTokens: 2 }),
+      metadataFrame({ uncachedInputTokens: 14, outputTokens: 5, cacheReadInputTokens: 8 }),
+    ))
+    expect(chunks.filter(chunk => chunk.type === 'usage')).toEqual([{
+      type: 'usage',
+      usage: { inputTokens: 14, outputTokens: 5, cacheReadTokens: 8 },
+    }])
+  })
+
+  it('ignores malformed token metadata without replacing valid usage', async () => {
+    const chunks = await run(join(
+      textFrame('Done.'),
+      metadataFrame({ uncachedInputTokens: 10, outputTokens: 2 }),
+      metadataFrame({ uncachedInputTokens: -1, outputTokens: 9 }),
+    ))
+    expect(chunks.filter(chunk => chunk.type === 'usage')).toEqual([{
+      type: 'usage',
+      usage: { inputTokens: 10, outputTokens: 2 },
+    }])
   })
 
   it('reports a content-free stream as an empty response', async () => {

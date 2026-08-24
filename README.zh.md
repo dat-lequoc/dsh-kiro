@@ -153,6 +153,8 @@ Kiro 没有独立 system 槽位，因此 harness system prompt 会放入最早�
 
 响应为 `vnd.amazon.eventstream` 帧。适配器验证帧边界与 CRC，将 `<thinking>` 内容转为 DSH reasoning block，保留文本、解码工具调用，并过滤已知的开放权重提示词格式残留。
 
+Kiro 的终端响应元数据会映射为 DSH 原生 token usage：未缓存输入、输出、缓存读取与缓存写入。会话可据此显示输入/输出总量、解码吞吐和缓存命中率，且不会估算或重复计数。
+
 ## 为什么部分 Claude 路由需要代理
 
 Kiro 可能同时按账号权益与请求出口授权模型系列。未授权出口下，`claude-*` 可能返回 `INVALID_MODEL`，而开放权重模型仍可工作。需要时可用 `proxyUrl` 提供合适出口。代理使用 HTTP `CONNECT`，TLS 在隧道内协商，因此代理能看到目标主机名，但看不到 bearer token 或请求正文。
@@ -169,7 +171,6 @@ npm run pack:dist
 
 ## 已知限制
 
-- Kiro 返回 credits 而非精确 token usage，因此适配器不发出 `usage` chunk。
 - 图片输入目前以 `UNSUPPORTED_CONTENT` 拒绝。
 - 工具名必须匹配 `^[A-Za-z][A-Za-z0-9_]{0,63}$`。
 - 不支持 SOCKS 代理。

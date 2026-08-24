@@ -59,6 +59,14 @@ export function toolFrame(event: Record<string, unknown>): Uint8Array {
   )
 }
 
+/** Frame one terminal `metadataEvent`. */
+export function metadataFrame(tokenUsage: Record<string, unknown>): Uint8Array {
+  return frame(
+    { ':event-type': 'metadataEvent', ':content-type': 'application/json', ':message-type': 'event' },
+    JSON.stringify({ tokenUsage }),
+  )
+}
+
 /**
  * Concatenate frames into one buffer, so a test can split them at arbitrary
  * offsets to prove incremental decoding.

@@ -160,6 +160,8 @@ Kiro has no separate system slot, so the harness system prompt is placed on the 
 
 Responses arrive as `vnd.amazon.eventstream` frames. The adapter validates frame boundaries and CRCs, routes `<thinking>` runs into DSH reasoning blocks, preserves text blocks, decodes tool calls, and suppresses known open-weight prompt-format artifacts.
 
+Kiro's terminal response metadata is mapped to DSH's native token usage buckets: uncached input, output, cache reads, and cache writes. This powers session input/output totals, decode throughput, and cache-hit metrics without estimates or double-counting.
+
 ## Why some Claude routes need a proxy
 
 Kiro can authorize model families by request egress as well as account entitlement. From an unauthorized egress a `claude-*` model may fail with `INVALID_MODEL` while open-weight routes work. `proxyUrl` provides the required egress when applicable. The adapter uses an HTTP `CONNECT` tunnel with TLS negotiated inside it, so the proxy sees the target hostname but not the bearer token or request body.
@@ -180,7 +182,6 @@ npm run pack:dist
 
 ## Known limitations
 
-- Kiro reports consumed credits rather than exact token usage, so the adapter emits no `usage` chunk.
 - Image content is currently rejected with `UNSUPPORTED_CONTENT`.
 - Tool names must match `^[A-Za-z][A-Za-z0-9_]{0,63}$`.
 - SOCKS proxies are not supported.

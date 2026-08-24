@@ -92,6 +92,17 @@ export interface WireMeteringEvent {
     unitPlural: string;
     usage: number;
 }
+/** Exact, disjoint token counters reported at the end of a model call. */
+export interface WireTokenUsage {
+    uncachedInputTokens?: number;
+    outputTokens?: number;
+    cacheReadInputTokens?: number;
+    cacheWriteInputTokens?: number;
+}
+/** Terminal response metadata. Kiro may add other metadata fields over time. */
+export interface WireMetadataEvent {
+    tokenUsage?: WireTokenUsage;
+}
 /** A decoded event-stream frame: its headers plus its raw payload bytes. */
 export interface WireFrame {
     /** Frame headers; `:event-type` or `:exception-type` names the payload. */

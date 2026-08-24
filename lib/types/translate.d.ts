@@ -7,10 +7,10 @@
  * scanner that holds back only a tail short enough to be a partial marker, so
  * markers split across frames are still recognized without delaying output.
  *
- * The stream carries no finish event and no token counts: the frame sequence
- * simply ends. The terminal reason is therefore derived — `tool-calls` when
- * the model opened any tool call, `stop` otherwise, and `EMPTY_RESPONSE` for a
- * stream that produced no content at all.
+ * The stream carries no finish event: the frame sequence simply ends. Its
+ * terminal `metadataEvent` does carry exact, disjoint token counters. The
+ * finish reason is derived — `tool-calls` when the model opened any tool call,
+ * `stop` otherwise, and `EMPTY_RESPONSE` for a stream with no content at all.
  *
  * @module dsh-kiro/translate
  */
@@ -49,8 +49,7 @@ export declare class TextRouter {
  * Translate decoded frames into harness chunks.
  * @param frames - decoded event-stream frames in arrival order.
  * @returns deltas as they arrive, then every `block-end`, then one terminal
- *   `finish`. No `usage` chunk is emitted: the operation reports consumed
- *   account credits rather than token counts.
+ *   exact terminal `usage` when supplied by Kiro, and one `finish`.
  * @throws `LlmError` for an in-band service exception frame or a malformed payload.
  */
 export declare function translate(frames: AsyncIterable<WireFrame>): AsyncGenerator<StreamChunk>;
