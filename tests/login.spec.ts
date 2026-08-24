@@ -9,8 +9,10 @@ import {
   importApiKey,
   importExternalIdp,
   pollDeviceLogin,
+  pollSocialDeviceLogin,
   saveDeviceCredentials,
   startDeviceLogin,
+  startSocialDeviceLogin,
 } from '../src/login.ts'
 
 const temporaryDirectories: string[] = []
@@ -178,34 +180,79 @@ describe('managed credentials', () => {
 
 describe('additional Kiro auth methods', () => {
   it('starts Google login through Kiro\'s coded device flow', async () => {
-    const request = vi.fn()
-      .mockResolvedValueOnce({ status: 200, body: { clientId: 'client', clientSecret: 'secret' } })
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      body: {
+        deviceCode: 'device',
+        userCode: 'XWIS-WIJO',
+        verificationUri: 'https://app.kiro.dev/account/device',
+        verificationUriComplete: 'https://app.kiro.dev/account/device?user_code=XWIS-WIJO&login_provider=Google',
+        expiresInMilliseconds: 300_000,
+        intervalInMilliseconds: 5000,
+      },
+    })
+    const signal = new AbortController().signal
+    const session = await startSocialDeviceLogin('google', request, signal)
+
+    expect(session).toMatchObject({
+      provider: 'google',
+      userCode: 'XWIS-WIJO',
+      verificationUri: 'https://app.kiro.dev/account/device?user_code=XWIS-WIJO&login_provider=Google',
+      intervalSeconds: 5,
+    })
+    expect(request.mock.calls[0]).toEqual([
+      'https://prod.us-east-1.auth.desktop.kiro.dev/oauth/device/authorization',
+      { clientId: 'kiro-cli', loginProvider: 'Google' },
+      signal,
+    ])
+
+    const poll = vi.fn()
       .mockResolvedValueOnce({
         status: 200,
         body: {
-          deviceCode: 'device',
-          userCode: 'XWIS-WIJO',
-          verificationUriComplete: 'https://view.awsapps.com/start/#/device?user_code=XWIS-WIJO',
+          accessToken: null,
+          refreshToken: null,
+          profileArn: null,
+          status: 'authorization_pending',
         },
       })
-    const signal = new AbortController().signal
-    const session = await startDeviceLogin('us-east-1', request, signal, { authMethod: 'google' })
-
-    expect(session).toMatchObject({
-      authMethod: 'google',
-      userCode: 'XWIS-WIJO',
-      startUrl: 'https://view.awsapps.com/start',
+      .mockResolvedValueOnce({
+        status: 200,
+        body: {
+          accessToken: 'access',
+          refreshToken: 'refresh',
+          profileArn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/social',
+          status: 'success',
+        },
+      })
+    await expect(pollSocialDeviceLogin(session, poll, signal)).resolves.toEqual({
+      status: 'pending', intervalSeconds: 5,
     })
-    expect(request.mock.calls[1]?.[1]).toMatchObject({ startUrl: 'https://view.awsapps.com/start' })
-
-    const poll = vi.fn().mockResolvedValue({
-      status: 200,
-      body: { accessToken: 'access', refreshToken: 'refresh', expiresIn: 3600 },
-    })
-    await expect(pollDeviceLogin(session, poll, signal)).resolves.toMatchObject({
+    await expect(pollSocialDeviceLogin(session, poll, signal)).resolves.toMatchObject({
       status: 'completed',
-      credentials: { authMethod: 'google', clientId: 'client' },
+      credentials: {
+        authMethod: 'google',
+        profileArn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/social',
+      },
     })
+    expect(poll.mock.calls[0]).toEqual([
+      'https://prod.us-east-1.auth.desktop.kiro.dev/oauth/device/poll',
+      { clientId: 'kiro-cli', deviceCode: 'device' },
+      signal,
+    ])
+  })
+
+  it('rejects a Kiro social device URL outside app.kiro.dev', async () => {
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      body: {
+        deviceCode: 'device',
+        userCode: 'ABCD-EFGH',
+        verificationUriComplete: 'https://evil.example/account/device?user_code=ABCD-EFGH',
+      },
+    })
+    await expect(startSocialDeviceLogin('github', request, new AbortController().signal))
+      .rejects.toThrow(/unexpected social verification URL/u)
   })
 
   it('validates API keys on the Amazon Q surface with TokenType', async () => {

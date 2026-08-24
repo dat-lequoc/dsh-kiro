@@ -10,7 +10,7 @@ export type LoginGetTransport = (url: string, headers: Record<string, string>, s
     body: unknown;
 }>;
 export interface DeviceLoginOptions {
-    authMethod?: 'builder-id' | 'idc' | 'google' | 'github';
+    authMethod?: 'builder-id' | 'idc';
     startUrl?: string;
 }
 export interface DeviceLoginSession {
@@ -22,10 +22,25 @@ export interface DeviceLoginSession {
     intervalSeconds: number;
     expiresAt: number;
     region: string;
-    authMethod: 'builder-id' | 'idc' | 'google' | 'github';
+    authMethod: 'builder-id' | 'idc';
     startUrl: string;
 }
 export type DeviceLoginPoll = {
+    status: 'pending';
+    intervalSeconds: number;
+} | {
+    status: 'completed';
+    credentials: ManagedCredentials;
+};
+export interface SocialDeviceLoginSession {
+    provider: 'google' | 'github';
+    deviceCode: string;
+    userCode: string;
+    verificationUri: string;
+    intervalSeconds: number;
+    expiresAt: number;
+}
+export type SocialDeviceLoginPoll = {
     status: 'pending';
     intervalSeconds: number;
 } | {
@@ -60,6 +75,10 @@ export interface CredentialSummary {
 export declare function startDeviceLogin(region: string, requestJson: LoginJsonTransport, signal: AbortSignal, options?: DeviceLoginOptions): Promise<DeviceLoginSession>;
 /** Poll one device authorization once. */
 export declare function pollDeviceLogin(session: DeviceLoginSession, requestJson: LoginJsonTransport, signal: AbortSignal): Promise<DeviceLoginPoll>;
+/** Begin Kiro's headless Google or GitHub device authorization. */
+export declare function startSocialDeviceLogin(provider: 'google' | 'github', requestJson: LoginJsonTransport, signal: AbortSignal): Promise<SocialDeviceLoginSession>;
+/** Poll one Kiro Google/GitHub device authorization once. */
+export declare function pollSocialDeviceLogin(session: SocialDeviceLoginSession, requestJson: LoginJsonTransport, signal: AbortSignal): Promise<SocialDeviceLoginPoll>;
 /** Validate and refresh an imported Kiro refresh token. */
 export declare function importRefreshToken(input: {
     refreshToken: string;

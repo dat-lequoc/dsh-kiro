@@ -11,10 +11,12 @@ import {
   importExternalIdp,
   importRefreshToken,
   pollDeviceLogin,
+  pollSocialDeviceLogin,
   postJson,
   postJsonWithHeaders,
   saveManagedCredentials,
   startDeviceLogin,
+  startSocialDeviceLogin,
 } from '../lib/index.js'
 
 function option(name) {
@@ -88,7 +90,7 @@ Common options:
   const requestJson = (url, body, signal) => postJson(url, body, proxyUrl, signal)
   let credentials
 
-  if (method === 'builder-id' || method === 'idc' || method === 'google' || method === 'github') {
+  if (method === 'builder-id' || method === 'idc') {
     const session = await startDeviceLogin(region, requestJson, controller.signal, {
       authMethod: method,
       ...(method === 'idc' ? { startUrl: option('--start-url') ?? process.env.KIRO_START_URL ?? '' } : {}),
@@ -101,6 +103,23 @@ Common options:
     while (true) {
       await delay(intervalSeconds * 1000, controller.signal)
       const result = await pollDeviceLogin(session, requestJson, controller.signal)
+      if (result.status === 'pending') {
+        intervalSeconds = result.intervalSeconds
+        continue
+      }
+      credentials = result.credentials
+      break
+    }
+  } else if (method === 'google' || method === 'github') {
+    const session = await startSocialDeviceLogin(method, requestJson, controller.signal)
+    console.log(`Open ${session.verificationUri}`)
+    console.log(`Device code: ${session.userCode}`)
+    if (!process.argv.includes('--no-open')) openBrowser(session.verificationUri)
+
+    let intervalSeconds = session.intervalSeconds
+    while (true) {
+      await delay(intervalSeconds * 1000, controller.signal)
+      const result = await pollSocialDeviceLogin(session, requestJson, controller.signal)
       if (result.status === 'pending') {
         intervalSeconds = result.intervalSeconds
         continue

@@ -15,10 +15,12 @@ import {
   importExternalIdp,
   importRefreshToken,
   pollDeviceLogin,
+  pollSocialDeviceLogin,
   saveManagedCredentials,
   startDeviceLogin,
+  startSocialDeviceLogin,
 } from './login.ts'
-import type { DeviceLoginSession, ManagedCredentials } from './login.ts'
+import type { DeviceLoginPoll, ManagedCredentials } from './login.ts'
 import { getJson, postJson } from './transport.ts'
 
 interface WebDependencies {
@@ -30,9 +32,8 @@ interface WebDependencies {
 
 interface LoginFlow {
   status: 'pending' | 'complete' | 'error'
-  kind: 'device'
+  kind: 'device' | 'social-device'
   method: string
-  deviceSession?: DeviceLoginSession
   authUrl?: string
   userCode?: string
   startedAt: number
@@ -188,35 +189,14 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     }
   }
 
-  const beginDevice = async (body: Record<string, unknown>): Promise<unknown> => {
-    loginController?.abort('starting a new Kiro login')
-    const controller = new AbortController()
-    loginController = controller
-    if (body.method !== 'builder-id' && body.method !== 'idc'
-      && body.method !== 'google' && body.method !== 'github') {
-      throw new Error('Unsupported Kiro device login method')
-    }
-    const method = body.method
-    const connection = dependencies.options()
-    const region = optionalText(body.region) ?? connection.region ?? 'us-east-1'
-    const requestJson = (url: string, value: unknown, signal: AbortSignal) =>
-      postJson(url, value, connection.proxyUrl, signal)
-    const session = await startDeviceLogin(region, requestJson, controller.signal, {
-      authMethod: method,
-      ...method === 'idc' ? { startUrl: requiredText(body.startUrl, 'IAM Identity Center start URL') } : {},
-    })
-    const flow: LoginFlow = {
-      status: 'pending',
-      kind: 'device',
-      method,
-      deviceSession: session,
-      authUrl: session.verificationUri,
-      userCode: session.userCode,
-      startedAt: Date.now(),
-    }
-    login = flow
+  const monitorLogin = (
+    initialIntervalSeconds: number,
+    flow: LoginFlow,
+    controller: AbortController,
+    poll: () => Promise<DeviceLoginPoll>,
+  ): void => {
     void (async () => {
-      let intervalSeconds = session.intervalSeconds
+      let intervalSeconds = initialIntervalSeconds
       try {
         while (!controller.signal.aborted) {
           await new Promise<void>((resolve, reject) => {
@@ -230,7 +210,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
             }, intervalSeconds * 1000)
             controller.signal.addEventListener('abort', onAbort, { once: true })
           })
-          const result = await pollDeviceLogin(session, requestJson, controller.signal)
+          const result = await poll()
           if (result.status === 'pending') {
             intervalSeconds = result.intervalSeconds
             continue
@@ -248,6 +228,65 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
         }
       }
     })()
+  }
+
+  const beginDevice = async (body: Record<string, unknown>): Promise<unknown> => {
+    loginController?.abort('starting a new Kiro login')
+    const controller = new AbortController()
+    loginController = controller
+    if (body.method !== 'builder-id' && body.method !== 'idc') {
+      throw new Error('Unsupported Kiro device login method')
+    }
+    const method = body.method
+    const connection = dependencies.options()
+    const region = optionalText(body.region) ?? connection.region ?? 'us-east-1'
+    const requestJson = (url: string, value: unknown, signal: AbortSignal) =>
+      postJson(url, value, connection.proxyUrl, signal)
+    const session = await startDeviceLogin(region, requestJson, controller.signal, {
+      authMethod: method,
+      ...method === 'idc' ? { startUrl: requiredText(body.startUrl, 'IAM Identity Center start URL') } : {},
+    })
+    const flow: LoginFlow = {
+      status: 'pending',
+      kind: 'device',
+      method,
+      authUrl: session.verificationUri,
+      userCode: session.userCode,
+      startedAt: Date.now(),
+    }
+    login = flow
+    monitorLogin(
+      session.intervalSeconds,
+      flow,
+      controller,
+      () => pollDeviceLogin(session, requestJson, controller.signal),
+    )
+    return publicLogin(login)
+  }
+
+  const beginSocialDevice = async (method: 'google' | 'github'): Promise<unknown> => {
+    loginController?.abort('starting a new Kiro login')
+    const controller = new AbortController()
+    loginController = controller
+    const connection = dependencies.options()
+    const requestJson = (url: string, value: unknown, signal: AbortSignal) =>
+      postJson(url, value, connection.proxyUrl, signal)
+    const session = await startSocialDeviceLogin(method, requestJson, controller.signal)
+    const flow: LoginFlow = {
+      status: 'pending',
+      kind: 'social-device',
+      method,
+      authUrl: session.verificationUri,
+      userCode: session.userCode,
+      startedAt: Date.now(),
+    }
+    login = flow
+    monitorLogin(
+      session.intervalSeconds,
+      flow,
+      controller,
+      () => pollSocialDeviceLogin(session, requestJson, controller.signal),
+    )
     return publicLogin(login)
   }
 
@@ -310,7 +349,9 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
             if (path === 'login' && request.method === 'POST') {
               const body = await readJson(request)
               const method = optionalText(body.method) ?? 'builder-id'
-              const value = await beginDevice({ ...body, method })
+              const value = method === 'google' || method === 'github'
+                ? await beginSocialDevice(method)
+                : await beginDevice({ ...body, method })
               sendJson(response, 200, { ok: true, value })
               return
             }

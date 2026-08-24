@@ -50,7 +50,7 @@ Open **Settings → Kiro** and select a method:
 
 - **AWS Builder ID** uses the standard device-code flow.
 - **IAM Identity Center** uses a device flow with your `https://<company>.awsapps.com/start` URL and region.
-- **Google / GitHub** uses Kiro's remote device flow. The page shows a one-time `XXXX-XXXX` code and authorization URL; continue with the chosen provider in the browser while the plugin waits for completion.
+- **Google / GitHub** uses Kiro's social device flow. The page shows a one-time `XXXX-XXXX` code and an `app.kiro.dev/account/device` authorization URL while the plugin waits for completion.
 - **Refresh token**, **Kiro API key**, and **Microsoft external IdP JSON** validate/import an existing credential without exposing it back to the browser status API.
 
 After an OAuth login, the plugin queries `ListAvailableProfiles`, saves the selected profile ARN with its managed credential, and uses the ARN's region for inference.

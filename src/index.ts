@@ -60,9 +60,11 @@ export {
   importExternalIdp,
   importRefreshToken,
   pollDeviceLogin,
+  pollSocialDeviceLogin,
   saveDeviceCredentials,
   saveManagedCredentials,
   startDeviceLogin,
+  startSocialDeviceLogin,
 } from './login.ts'
 export type {
   DeviceCredentials,
@@ -70,6 +72,8 @@ export type {
   DeviceLoginPoll,
   DeviceLoginSession,
   ManagedCredentials,
+  SocialDeviceLoginPoll,
+  SocialDeviceLoginSession,
 } from './login.ts'
 export { credentialDirectory } from './paths.ts'
 export { assertKiroProfileArn, profileRegion } from './profile.ts'

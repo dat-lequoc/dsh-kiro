@@ -46,7 +46,7 @@ pnpm dsh --profile web
 
 ### Web
 
-打开 **Settings → Kiro** 并选择登录方式：Builder ID 使用标准设备授权；IAM Identity Center 还需填写 `https://<company>.awsapps.com/start` 与 region；Google/GitHub 使用 Kiro 的远程设备流程，页面会显示一次性 `XXXX-XXXX` 验证码和授权网址，插件会等待浏览器授权完成；也可直接导入 refresh token、Kiro API key 或 Microsoft external-IdP JSON。
+打开 **Settings → Kiro** 并选择登录方式：Builder ID 使用标准设备授权；IAM Identity Center 还需填写 `https://<company>.awsapps.com/start` 与 region；Google/GitHub 使用 Kiro 的社交设备流程，页面会显示一次性 `XXXX-XXXX` 验证码与 `app.kiro.dev/account/device` 授权网址，插件会等待浏览器授权完成；也可直接导入 refresh token、Kiro API key 或 Microsoft external-IdP JSON。
 
 OAuth 登录完成后，插件会调用 `ListAvailableProfiles`，把选中的 profile ARN 与自管凭据一起保存，并按 ARN 中的 region 发起推理请求。
 

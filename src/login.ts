@@ -13,6 +13,9 @@ const TOKEN_FILE = 'kiro-auth-token.json'
 export const BUILDER_START_URL = 'https://view.awsapps.com/start'
 const KIRO_ISSUER_URL = 'https://identitycenter.amazonaws.com/ssoins-722374e8c3c8e6c6'
 const KIRO_AUTH_SERVICE = 'https://prod.us-east-1.auth.desktop.kiro.dev'
+const SOCIAL_CLIENT_ID = 'kiro-cli'
+const SOCIAL_DEVICE_AUTHORIZE_URL = `${KIRO_AUTH_SERVICE}/oauth/device/authorization`
+const SOCIAL_DEVICE_POLL_URL = `${KIRO_AUTH_SERVICE}/oauth/device/poll`
 const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
 const SCOPES = [
   'codewhisperer:completions',
@@ -33,7 +36,7 @@ export type LoginGetTransport = (
 ) => Promise<{ status: number; body: unknown }>
 
 export interface DeviceLoginOptions {
-  authMethod?: 'builder-id' | 'idc' | 'google' | 'github'
+  authMethod?: 'builder-id' | 'idc'
   startUrl?: string
 }
 
@@ -46,11 +49,24 @@ export interface DeviceLoginSession {
   intervalSeconds: number
   expiresAt: number
   region: string
-  authMethod: 'builder-id' | 'idc' | 'google' | 'github'
+  authMethod: 'builder-id' | 'idc'
   startUrl: string
 }
 
 export type DeviceLoginPoll =
+  | { status: 'pending'; intervalSeconds: number }
+  | { status: 'completed'; credentials: ManagedCredentials }
+
+export interface SocialDeviceLoginSession {
+  provider: 'google' | 'github'
+  deviceCode: string
+  userCode: string
+  verificationUri: string
+  intervalSeconds: number
+  expiresAt: number
+}
+
+export type SocialDeviceLoginPoll =
   | { status: 'pending'; intervalSeconds: number }
   | { status: 'completed'; credentials: ManagedCredentials }
 
@@ -130,11 +146,7 @@ export async function startDeviceLogin(
   options: DeviceLoginOptions = {},
 ): Promise<DeviceLoginSession> {
   const selectedRegion = assertKiroRegion(region.trim() || 'us-east-1')
-  const authMethod = options.authMethod === 'idc'
-    || options.authMethod === 'google'
-    || options.authMethod === 'github'
-    ? options.authMethod
-    : 'builder-id'
+  const authMethod = options.authMethod === 'idc' ? 'idc' : 'builder-id'
   const selectedStartUrl = startUrl(authMethod === 'idc'
     ? options.startUrl ?? ''
     : BUILDER_START_URL)
@@ -238,6 +250,97 @@ export async function pollDeviceLogin(
       region: session.region,
       authMethod: session.authMethod,
       startUrl: session.startUrl,
+      ...profileArn === undefined ? {} : { profileArn: assertKiroProfileArn(profileArn) },
+    },
+  }
+}
+
+/** Begin Kiro's headless Google or GitHub device authorization. */
+export async function startSocialDeviceLogin(
+  provider: 'google' | 'github',
+  requestJson: LoginJsonTransport,
+  signal: AbortSignal,
+): Promise<SocialDeviceLoginSession> {
+  const loginProvider = provider === 'google' ? 'Google' : 'Github'
+  const response = await requestJson(SOCIAL_DEVICE_AUTHORIZE_URL, {
+    clientId: SOCIAL_CLIENT_ID,
+    loginProvider,
+  }, signal)
+  if (response.status !== 200) {
+    throw new Error(`Kiro social device authorization failed: ${providerError(response.body, `HTTP ${response.status}`)}`)
+  }
+  const body = record(response.body)
+  const deviceCode = body === undefined ? undefined : stringField(body, 'deviceCode', 'device_code')
+  const userCode = body === undefined ? undefined : stringField(body, 'userCode', 'user_code')
+  const verificationUri = body === undefined
+    ? undefined
+    : stringField(body, 'verificationUriComplete', 'verification_uri_complete')
+  if (deviceCode === undefined || userCode === undefined || verificationUri === undefined) {
+    throw new Error('Kiro social device authorization returned incomplete login details')
+  }
+  const verificationUrl = new URL(verificationUri)
+  if (verificationUrl.protocol !== 'https:'
+    || verificationUrl.hostname !== 'app.kiro.dev'
+    || verificationUrl.pathname !== '/account/device'
+    || verificationUrl.searchParams.get('user_code') !== userCode
+    || verificationUrl.searchParams.get('login_provider') !== loginProvider) {
+    throw new Error('Kiro returned an unexpected social verification URL')
+  }
+  const intervalMilliseconds = Math.max(1, body === undefined
+    ? 5000
+    : numberField(body, 'intervalInMilliseconds', 'interval_in_milliseconds') ?? 5000)
+  const expiresInMilliseconds = Math.max(1, body === undefined
+    ? 300_000
+    : numberField(body, 'expiresInMilliseconds', 'expires_in_milliseconds') ?? 300_000)
+  return {
+    provider,
+    deviceCode,
+    userCode,
+    verificationUri: verificationUrl.toString(),
+    intervalSeconds: Math.max(1, Math.ceil(intervalMilliseconds / 1000)),
+    expiresAt: Date.now() + expiresInMilliseconds,
+  }
+}
+
+/** Poll one Kiro Google/GitHub device authorization once. */
+export async function pollSocialDeviceLogin(
+  session: SocialDeviceLoginSession,
+  requestJson: LoginJsonTransport,
+  signal: AbortSignal,
+): Promise<SocialDeviceLoginPoll> {
+  if (Date.now() >= session.expiresAt) throw new Error('Kiro social device authorization expired; start login again')
+  const response = await requestJson(SOCIAL_DEVICE_POLL_URL, {
+    clientId: SOCIAL_CLIENT_ID,
+    deviceCode: session.deviceCode,
+  }, signal)
+  const body = record(response.body)
+  const progress = body === undefined
+    ? undefined
+    : stringField(body, 'error') ?? stringField(body, 'status')
+  if (progress === 'authorization_pending') {
+    return { status: 'pending', intervalSeconds: session.intervalSeconds }
+  }
+  if (progress === 'slow_down') {
+    return { status: 'pending', intervalSeconds: session.intervalSeconds + 5 }
+  }
+  if (response.status !== 200 || body === undefined) {
+    throw new Error(`Kiro social device token request failed: ${providerError(response.body, `HTTP ${response.status}`)}`)
+  }
+  const accessToken = stringField(body, 'accessToken', 'access_token')
+  const refreshToken = stringField(body, 'refreshToken', 'refresh_token')
+  if (accessToken === undefined || refreshToken === undefined) {
+    throw new Error(`Kiro social device token request failed: ${progress ?? 'incomplete token response'}`)
+  }
+  const expiresIn = Math.max(1, numberField(body, 'expiresIn', 'expires_in') ?? 3600)
+  const profileArn = stringField(body, 'profileArn', 'profile_arn')
+  return {
+    status: 'completed',
+    credentials: {
+      accessToken,
+      refreshToken,
+      expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+      region: 'us-east-1',
+      authMethod: session.provider,
       ...profileArn === undefined ? {} : { profileArn: assertKiroProfileArn(profileArn) },
     },
   }
