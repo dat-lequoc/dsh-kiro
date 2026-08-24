@@ -22,7 +22,9 @@ export type { KiroAdapterOptions, KiroCatalogModel, KiroConnectionOptions } from
 export { clearTokenCache, DEFAULT_REGION, kiroCredentialDirectory, resolveToken, resolveTokenFromDirectories, } from './auth.ts';
 export type { KiroToken, TokenSourceOptions } from './auth.ts';
 export type { DirectoryTokenSourceOptions, KiroAuthMethod } from './auth.ts';
-export { discoverKiroProfileArn, KiroModelDiscovery, modelSupportsThinking, parseAvailableModels } from './discovery.ts';
+export { discoverKiroProfileArn, KiroModelDiscovery, modelSupportsThinking, parseAvailableModels, parseEffortSchema, } from './discovery.ts';
+export { compareKiroModels, FileModelSettingsStore, modelSelection, modelSettingsPath, } from './model-settings.ts';
+export type { KiroModelSettings } from './model-settings.ts';
 export { assertMicrosoftTokenEndpoint, normalizeExternalIdpCredentials } from './external-idp.ts';
 export { BUILDER_START_URL, credentialSummary, deleteDeviceCredentials, importApiKey, importExternalIdp, importRefreshToken, pollDeviceLogin, pollSocialDeviceLogin, saveDeviceCredentials, saveManagedCredentials, startDeviceLogin, startSocialDeviceLogin, } from './login.ts';
 export type { DeviceCredentials, DeviceLoginOptions, DeviceLoginPoll, DeviceLoginSession, ManagedCredentials, SocialDeviceLoginPoll, SocialDeviceLoginSession, } from './login.ts';
@@ -30,6 +32,8 @@ export { credentialDirectory } from './paths.ts';
 export { assertKiroProfileArn, profileRegion } from './profile.ts';
 export { assertKiroRegion } from './region.ts';
 export { getJson, parseProxyUrl, postForm, postJson, postJsonWithHeaders } from './transport.ts';
+export { KiroUsageService, parseKiroUsage } from './usage.ts';
+export type { KiroUsage, KiroUsageRow, KiroUsageServiceOptions } from './usage.ts';
 export type { RequestDefaults } from './serialize.ts';
 export type * from './types.ts';
 export declare const name = "dsh-kiro";
@@ -53,10 +57,10 @@ export interface Config {
     region?: string;
     /** CodeWhisperer profile ARN; omitted uses the account default. */
     profileArn?: string;
-    /** Deployment thinking policy; `disabled` limits every request to `off`. */
+    /** Deployment thinking policy; `disabled` suppresses model reasoning. */
     thinking?: 'enabled' | 'disabled';
-    /** Default thinking effort (default `off`); Kiro carries it as prompt markers. */
-    reasoningEffort?: 'off' | 'low' | 'medium' | 'high';
+    /** Optional provider-wide override; omission follows each model's live default. */
+    reasoningEffort?: 'none' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     /** Positive context capacity used when the selected model has no exact value (default 200,000). */
     defaultContextWindow?: number;
     /** Advisory models shown by discovery consumers; defaults to the verified account tier. */

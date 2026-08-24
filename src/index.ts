@@ -29,10 +29,12 @@ import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import { kiroCredentialDirectory, resolveTokenFromDirectories } from './auth.ts'
 import { discoverKiroProfileArn, KiroModelDiscovery } from './discovery.ts'
 import { credentialDirectory } from './paths.ts'
+import { FileModelSettingsStore } from './model-settings.ts'
 import { assertKiroProfileArn } from './profile.ts'
 import { assertKiroRegion } from './region.ts'
 import { parseProxyUrl, postForm, postJson } from './transport.ts'
 import { registerWebApi } from './web.ts'
+import { KiroUsageService } from './usage.ts'
 
 export {
   DEFAULT_CONTEXT_WINDOW,
@@ -50,7 +52,20 @@ export {
 } from './auth.ts'
 export type { KiroToken, TokenSourceOptions } from './auth.ts'
 export type { DirectoryTokenSourceOptions, KiroAuthMethod } from './auth.ts'
-export { discoverKiroProfileArn, KiroModelDiscovery, modelSupportsThinking, parseAvailableModels } from './discovery.ts'
+export {
+  discoverKiroProfileArn,
+  KiroModelDiscovery,
+  modelSupportsThinking,
+  parseAvailableModels,
+  parseEffortSchema,
+} from './discovery.ts'
+export {
+  compareKiroModels,
+  FileModelSettingsStore,
+  modelSelection,
+  modelSettingsPath,
+} from './model-settings.ts'
+export type { KiroModelSettings } from './model-settings.ts'
 export { assertMicrosoftTokenEndpoint, normalizeExternalIdpCredentials } from './external-idp.ts'
 export {
   BUILDER_START_URL,
@@ -79,6 +94,8 @@ export { credentialDirectory } from './paths.ts'
 export { assertKiroProfileArn, profileRegion } from './profile.ts'
 export { assertKiroRegion } from './region.ts'
 export { getJson, parseProxyUrl, postForm, postJson, postJsonWithHeaders } from './transport.ts'
+export { KiroUsageService, parseKiroUsage } from './usage.ts'
+export type { KiroUsage, KiroUsageRow, KiroUsageServiceOptions } from './usage.ts'
 export type { RequestDefaults } from './serialize.ts'
 export type * from './types.ts'
 
@@ -141,10 +158,10 @@ export interface Config {
   region?: string
   /** CodeWhisperer profile ARN; omitted uses the account default. */
   profileArn?: string
-  /** Deployment thinking policy; `disabled` limits every request to `off`. */
+  /** Deployment thinking policy; `disabled` suppresses model reasoning. */
   thinking?: 'enabled' | 'disabled'
-  /** Default thinking effort (default `off`); Kiro carries it as prompt markers. */
-  reasoningEffort?: 'off' | 'low' | 'medium' | 'high'
+  /** Optional provider-wide override; omission follows each model's live default. */
+  reasoningEffort?: 'none' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /** Positive context capacity used when the selected model has no exact value (default 200,000). */
   defaultContextWindow?: number
   /** Advisory models shown by discovery consumers; defaults to the verified account tier. */
@@ -164,6 +181,9 @@ const catalogModel: z<KiroCatalogModel> = z.object({
   contextWindow: z.number().step(1).min(1),
   maxTokens: z.number().step(1).min(1),
   thinking: z.boolean(),
+  reasoningEfforts: z.array(z.string()),
+  defaultReasoningEffort: z.string(),
+  effortSchemaPath: z.union(['output_config', 'reasoning']),
 })
 
 export const Config: z<Config> = z.object({
@@ -171,7 +191,7 @@ export const Config: z<Config> = z.object({
   region: z.string(),
   profileArn: z.string(),
   thinking: z.union(['enabled', 'disabled']),
-  reasoningEffort: z.union(['off', 'low', 'medium', 'high']),
+  reasoningEffort: z.union(['none', 'off', 'low', 'medium', 'high', 'xhigh', 'max']),
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
   models: z.array(catalogModel).default(DEFAULT_MODELS),
   streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
@@ -191,6 +211,11 @@ export type ResolvedKiroOptions = KiroConnectionOptions
 function resolveModels(models: readonly KiroCatalogModel[] | undefined): KiroCatalogModel[] {
   const seen = new Set<string>()
   return (models ?? DEFAULT_MODELS).map((model) => {
+    // Schemastery materializes an omitted optional array as `[]`; normalize it
+    // back to absence so legacy/fallback catalog rows remain valid.
+    const reasoningEfforts = model.reasoningEfforts?.length === 0
+      ? undefined
+      : model.reasoningEfforts
     if (model.id.length === 0) throw new Error('llm-kiro: catalog model ids must be non-empty')
     if (model.name !== undefined && model.name.length === 0) {
       throw new Error(`llm-kiro: catalog model "${model.id}" has an empty name`)
@@ -203,6 +228,18 @@ function resolveModels(models: readonly KiroCatalogModel[] | undefined): KiroCat
       && (!Number.isInteger(model.maxTokens) || model.maxTokens <= 0)) {
       throw new Error(`llm-kiro: catalog model "${model.id}" maxTokens must be a positive integer`)
     }
+    if (reasoningEfforts !== undefined
+      && (reasoningEfforts.some(effort => effort.length === 0)
+        || new Set(reasoningEfforts).size !== reasoningEfforts.length)) {
+      throw new Error(`llm-kiro: catalog model "${model.id}" reasoningEfforts must be unique non-empty ids`)
+    }
+    if (model.defaultReasoningEffort !== undefined
+      && !reasoningEfforts?.includes(model.defaultReasoningEffort)) {
+      throw new Error(`llm-kiro: catalog model "${model.id}" default reasoning effort is not advertised`)
+    }
+    if ((model.effortSchemaPath === undefined) !== (reasoningEfforts === undefined)) {
+      throw new Error(`llm-kiro: catalog model "${model.id}" needs both reasoningEfforts and effortSchemaPath`)
+    }
     if (seen.has(model.id)) throw new Error(`llm-kiro: duplicate catalog model "${model.id}"`)
     seen.add(model.id)
     return {
@@ -212,6 +249,11 @@ function resolveModels(models: readonly KiroCatalogModel[] | undefined): KiroCat
       ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
       ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
       ...model.thinking === undefined ? {} : { thinking: model.thinking },
+      ...reasoningEfforts === undefined ? {} : { reasoningEfforts: [...reasoningEfforts] },
+      ...model.defaultReasoningEffort === undefined
+        ? {}
+        : { defaultReasoningEffort: model.defaultReasoningEffort },
+      ...model.effortSchemaPath === undefined ? {} : { effortSchemaPath: model.effortSchemaPath },
     }
   })
 }
@@ -229,8 +271,9 @@ function resolveModels(models: readonly KiroCatalogModel[] | undefined): KiroCat
 export function resolveAdapterOptions(config: Config): ResolvedKiroOptions {
   if (config.thinking === 'disabled'
     && config.reasoningEffort !== undefined
-    && config.reasoningEffort !== 'off') {
-    throw new Error('llm-kiro: only reasoningEffort "off" can be configured when thinking is disabled')
+    && config.reasoningEffort !== 'off'
+    && config.reasoningEffort !== 'none') {
+    throw new Error('llm-kiro: only reasoningEffort "off" or "none" can be configured when thinking is disabled')
   }
   if (config.proxyUrl !== undefined) parseProxyUrl(config.proxyUrl)
   const region = config.region === undefined ? undefined : assertKiroRegion(config.region)
@@ -261,7 +304,9 @@ export function resolveAdapterOptions(config: Config): ResolvedKiroOptions {
     ...profileArn === undefined ? {} : { profileArn },
     defaults: {
       thinking: config.thinking,
-      reasoningEffort: config.reasoningEffort,
+      ...config.thinking === 'disabled'
+        ? { reasoningEffort: config.reasoningEffort ?? 'off' }
+        : config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort },
     },
     defaultContextWindow: config.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
     models: resolveModels(config.models),
@@ -315,12 +360,16 @@ export function apply(ctx: Context, config: Config): void {
       writableDirectories: [managedDirectory],
     })
   const discovery = new KiroModelDiscovery({ resolveToken: tokenResolver })
+  const modelSettings = new FileModelSettingsStore()
+  const usage = new KiroUsageService({ resolveToken: tokenResolver })
   const adapter = new KiroAdapter({
     options,
     resolveToken: tokenResolver,
     discoverModels: async (connection, signal) => {
       try {
-        return await discovery.list(connection, signal)
+        const models = await discovery.list(connection, signal)
+        await modelSettings.mergeCatalog(models)
+        return models
       } catch (error: unknown) {
         ctx.logger.warn('dsh-kiro: live model discovery failed; using the configured catalog')
         ctx.logger.warn(error)
@@ -328,6 +377,7 @@ export function apply(ctx: Context, config: Config): void {
       }
     },
     currentModels: connection => discovery.current(connection),
+    selectModels: models => modelSettings.enabledModels(models),
   })
   ctx.llm.registerConfigurableProviders([
     { provider: PROVIDER, displayName: 'Kiro', settingsNs: NS, settingsPath: [] },
@@ -356,6 +406,8 @@ export function apply(ctx: Context, config: Config): void {
     managedDirectory,
     options,
     discovery,
+    modelSettings,
+    usage,
     resolveToken: tokenResolver,
   })
 }

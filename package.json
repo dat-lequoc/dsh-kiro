@@ -1,7 +1,7 @@
 {
   "name": "dsh-kiro",
-  "description": "Kiro provider for DeepSeek Harness with multi-method login, profile refresh, and live model discovery",
-  "version": "0.1.7",
+  "description": "Kiro provider for DeepSeek Harness with multi-method login, usage, model controls, and token/profile refresh",
+  "version": "0.1.10",
   "type": "module",
   "license": "MIT",
   "author": {

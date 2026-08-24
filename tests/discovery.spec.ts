@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { KiroConnectionOptions } from '../src/adapter.ts'
-import { KiroModelDiscovery, modelSupportsThinking, parseAvailableModels } from '../src/discovery.ts'
+import {
+  KiroModelDiscovery,
+  modelSupportsThinking,
+  parseAvailableModels,
+  parseEffortSchema,
+} from '../src/discovery.ts'
 
 const connection = {
   region: 'us-east-1',
@@ -23,8 +28,34 @@ describe('Kiro model discovery', () => {
           modelName: 'Claude Opus 4.8',
           description: 'Most capable',
           tokenLimits: { maxInputTokens: 1_000_000, maxOutputTokens: 64_000 },
+          additionalModelRequestFieldsSchema: {
+            properties: {
+              output_config: {
+                properties: {
+                  effort: { enum: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'xhigh' },
+                },
+              },
+            },
+          },
         },
-        { modelId: 'claude-haiku-4.5', modelName: 'Claude Haiku 4.5' },
+        {
+          modelId: 'gpt-5.6-sol',
+          modelName: 'GPT-5.6 Sol',
+          additionalModelRequestFieldsSchema: {
+            properties: {
+              reasoning: {
+                properties: {
+                  effort: { enum: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], default: 'high' },
+                },
+              },
+            },
+          },
+        },
+        {
+          modelId: 'claude-haiku-4.5',
+          modelName: 'Claude Haiku 4.5',
+          additionalModelRequestFieldsSchema: null,
+        },
         { modelId: 'claude-opus-4.8', modelName: 'duplicate' },
       ],
     })).toEqual([
@@ -35,6 +66,17 @@ describe('Kiro model discovery', () => {
         contextWindow: 1_000_000,
         maxTokens: 64_000,
         thinking: true,
+        reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        defaultReasoningEffort: 'xhigh',
+        effortSchemaPath: 'output_config',
+      },
+      {
+        id: 'gpt-5.6-sol',
+        name: 'GPT-5.6 Sol',
+        thinking: true,
+        reasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+        defaultReasoningEffort: 'high',
+        effortSchemaPath: 'reasoning',
       },
       { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', thinking: false },
     ])
@@ -42,6 +84,14 @@ describe('Kiro model discovery', () => {
     expect(modelSupportsThinking('claude-sonnet-4.5')).toBe(true)
     expect(modelSupportsThinking('claude-sonnet-4')).toBe(false)
     expect(modelSupportsThinking('qwen3-coder-next')).toBe(false)
+  })
+
+  it('ignores malformed effort entries and only accepts a default in the enum', () => {
+    expect(parseEffortSchema({
+      properties: {
+        reasoning: { properties: { effort: { enum: ['low', 1, 'low', 'max'], default: 'other' } } },
+      },
+    })).toEqual({ levels: ['low', 'max'], schemaPath: 'reasoning' })
   })
 
   it('calls ListAvailableModels with auth and profile, then caches the account catalog', async () => {

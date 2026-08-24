@@ -20,7 +20,8 @@
 - 自动发现并保存账号的 CodeWhisperer profile ARN，使刷新后的 token 仍使用正确 profile。
 - 没有插件自管登录时，自动回退到 Kiro IDE/CLI 的 `~/.aws/sso/cache` 凭据。
 - 调用 Kiro `ListAvailableModels`，让模型选择器反映当前账号实际可用的 Opus、Sonnet、Haiku 与开放权重模型。
-- 为支持 thinking 的模型提供 `off`、`low`、`medium`、`high` 四档 reasoning effort。
+- 显示账号套餐、credits 使用量和重置日期，并提供紧凑、可持久化的模型启用列表。
+- 自动发现每个模型的 reasoning effort，包括 Kiro 提供的 `none`、`xhigh` 与 `max`。
 - 解码 Kiro Amazon EventStream 中的文本、推理与工具调用。
 - 支持直连或带认证的 HTTP/HTTPS `CONNECT` 代理。
 - `llm-kiro` 设置无需重启即可热更新。
@@ -89,18 +90,22 @@ kiro-login --logout
 
 ## 模型发现与推理档位
 
-适配器按认证类型选择 Amazon Q 或 CodeWhisperer 接口查询当前账号模型，并缓存五分钟。**Settings → Kiro → 发现模型**会强制刷新。模型名、描述、输入上限与输出上限都会映射进 DSH 模型目录。发现接口暂时失败时仍使用配置的后备目录；未列出的模型 id 也会继续透传给 Kiro。
+适配器按认证类型选择 Amazon Q 或 CodeWhisperer 接口查询当前账号模型，并缓存五分钟。**Settings → Kiro → 发现模型**会强制刷新。紧凑模型选择器决定哪些路由显示在 DSH 中；选择保存在 `$DSH_HOME/storages/kiro-auth/model-settings.json`，新发现的模型会自动启用。已选模型优先显示，每个系列内按最新版本排序。发现接口暂时失败时仍使用配置的后备目录；未列出的模型 id 也会继续透传给 Kiro，因此取消勾选不会中断已有会话。
 
-支持 thinking 的模型提供四档 effort：
+账号卡片还会显示 Kiro credits 使用量、套餐和重置日期。使用量缓存五分钟，打开设置页时刷新，也可通过 **刷新使用量** 强制更新。配额接口失败不会影响聊天，也不会清除上次成功结果。
+
+每个模型会从实时 `additionalModelRequestFieldsSchema` 公布自己的 effort 枚举与默认值，具体选项因模型而异；Kiro 当前 schema 包含：
 
 | 档位 | 行为 |
 |---|---|
-| `off` | 不添加 thinking 标记。 |
+| `none` | 在原生 schema 支持时关闭推理。 |
 | `low` | 请求较短推理预算。 |
 | `medium` | 请求均衡推理预算。 |
-| `high` | 请求最大支持推理预算。 |
+| `high` | 请求较高推理预算。 |
+| `xhigh` | 在模型提供时请求扩展高档。 |
+| `max` | 在模型提供时请求最高档。 |
 
-Kiro 通过提示词标记承载这些档位，而不是原生请求字段。可从 DSH Models 页面设置默认值，或写入：
+DSH 模型菜单只显示当前模型实际提供的选项，并采用 Kiro 给出的模型默认值。适配器通过 Kiro 原生的 `output_config.effort` 或 `reasoning.effort` 字段发送选择；旧的手工后备模型仍兼容 `off`/`low`/`medium`/`high` 提示词标记。可在 DSH 中选择其他档位，或设置可选的部署级覆盖：
 
 ```yaml
 llm-kiro:
@@ -124,8 +129,8 @@ llm-kiro:
 | `proxyUrl` | 直连 | Kiro 与 OIDC 请求使用的 HTTP/HTTPS 代理，可在 URL 中包含凭据。 |
 | `region` | 已登录 token 的 region | 选择 `q.<region>.amazonaws.com`。 |
 | `profileArn` | 账号默认值 | 请求与模型发现使用的 CodeWhisperer profile。 |
-| `thinking` | `enabled` | `disabled` 会把所有模型限制为 `off`。 |
-| `reasoningEffort` | `off` | 默认档位：`off`、`low`、`medium` 或 `high`。 |
+| `thinking` | `enabled` | `disabled` 会隐藏推理控制并停止发送原生 effort 字段。 |
+| `reasoningEffort` | 模型实时默认值 | 可选覆盖：`none`、`off`、`low`、`medium`、`high`、`xhigh` 或 `max`；模型不支持时会拒绝该值。 |
 | `defaultContextWindow` | `200000` | 发现接口未返回准确上限时的后备容量。 |
 | `models` | 内置后备目录 | 实时发现不可用时使用的建议目录。 |
 | `streamIdleTimeoutMs` | `300000` | provider 单次读取允许的最大空闲时间。 |

@@ -20,7 +20,8 @@ This is an independent integration and is not affiliated with or endorsed by AWS
 - Discover and persist the account's CodeWhisperer profile ARN so refreshed tokens keep the correct profile.
 - Fall back to Kiro IDE/CLI's existing `~/.aws/sso/cache` sign-in when no plugin-managed login exists.
 - Query Kiro's `ListAvailableModels` endpoint so the model picker reflects the signed-in account (Opus, Sonnet, Haiku, and available open-weight routes).
-- Expose `off`, `low`, `medium`, and `high` reasoning efforts on thinking-capable models.
+- Show the account plan, credit usage, and reset date, with a compact persistent model allowlist.
+- Auto-discover each model's reasoning efforts, including `none`, `xhigh`, and `max` where Kiro offers them.
 - Stream text, reasoning, and tool calls from Kiro's Amazon EventStream protocol.
 - Support direct egress or an authenticated HTTP/HTTPS `CONNECT` proxy.
 - Hot-reload `llm-kiro` settings without restarting DSH.
@@ -94,18 +95,24 @@ Credential priority is:
 
 ## Model discovery and reasoning
 
-The adapter asks the auth-appropriate Amazon Q/CodeWhisperer surface for the signed-in account and caches the result for five minutes. **Settings → Kiro → Discover models** forces a refresh. Model names, descriptions, input limits, and output limits are projected into the DSH catalog. If discovery is temporarily unavailable, the configured fallback catalog remains usable; unlisted model IDs are still passed through to Kiro.
+The adapter asks the auth-appropriate Amazon Q/CodeWhisperer surface for the signed-in account and caches the result for five minutes. **Settings → Kiro → Discover models** forces a refresh. The compact model selector controls which routes appear in DSH; choices persist in `$DSH_HOME/storages/kiro-auth/model-settings.json`, and newly discovered models are enabled automatically. Selected models appear first, with the latest version first inside each family. If discovery is temporarily unavailable, the configured fallback catalog remains usable; unlisted model IDs are still passed through to Kiro so an existing session is not broken by a checkbox change.
 
-Thinking-capable routes advertise four effort IDs:
+The account card also reads Kiro's credit usage, plan, and reset date. Usage is cached for five minutes, refreshed when the settings page opens, and can be forced with **Refresh usage**. A quota failure does not disable chat or discard the last successful reading.
+
+Each route advertises the effort enum and default from its live
+`additionalModelRequestFieldsSchema`. The exact choices vary by model; current
+Kiro schemas include:
 
 | Effort | Behavior |
 |---|---|
-| `off` | No thinking marker is added. |
+| `none` | Disables reasoning on models whose native schema offers it. |
 | `low` | Requests a short reasoning budget. |
 | `medium` | Requests a balanced reasoning budget. |
-| `high` | Requests the largest supported reasoning budget. |
+| `high` | Requests a large reasoning budget. |
+| `xhigh` | Requests extended high effort when advertised. |
+| `max` | Requests the model's maximum effort when advertised. |
 
-Kiro carries these controls through prompt markers rather than a native request field. Set the default from the DSH Models page or in `settings.yaml`:
+DSH's model menu exposes only the choices for the selected model and follows that model's Kiro-provided default. The adapter sends the selection through Kiro's native `output_config.effort` or `reasoning.effort` request field. Models from an older manually configured fallback catalog retain the legacy `off`/`low`/`medium`/`high` prompt-marker behavior. Choose another level in DSH or set an optional deployment-wide override in `settings.yaml`:
 
 ```yaml
 llm-kiro:
@@ -129,8 +136,8 @@ Every field is optional:
 | `proxyUrl` | direct | HTTP/HTTPS proxy for Kiro and OIDC requests; credentials in the URL are supported. |
 | `region` | signed-in token region | Selects the `q.<region>.amazonaws.com` endpoint. |
 | `profileArn` | account default | CodeWhisperer profile used for requests and model discovery. |
-| `thinking` | `enabled` | `disabled` restricts all models to effort `off`. |
-| `reasoningEffort` | `off` | Default: `off`, `low`, `medium`, or `high`. |
+| `thinking` | `enabled` | `disabled` suppresses reasoning controls and native effort fields. |
+| `reasoningEffort` | model's live default | Optional override: `none`, `off`, `low`, `medium`, `high`, `xhigh`, or `max`; unsupported values are rejected for that model. |
 | `defaultContextWindow` | `200000` | Fallback capacity when discovery reports no exact limit. |
 | `models` | bundled fallback | Advisory fallback catalog; live account discovery normally replaces it. |
 | `streamIdleTimeoutMs` | `300000` | Maximum idle time while a provider read is outstanding. |

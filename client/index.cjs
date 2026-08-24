@@ -49,9 +49,20 @@ window.__ModuleLoader__.load({
       import: 'Import credentials',
       signingIn: 'Working…',
       logout: 'Sign out',
-      models: 'Available models',
+      usage: 'Usage',
+      refreshUsage: 'Refresh usage',
+      refreshingUsage: 'Refreshing…',
+      used: 'used',
+      remaining: 'remaining',
+      resets: 'Resets',
+      updated: 'Updated',
+      models: 'Model selector',
       refresh: 'Discover models',
       refreshing: 'Discovering…',
+      selectAll: 'Select all',
+      deselectAll: 'Deselect all',
+      selected: 'selected',
+      saving: 'Saving…',
       configured: 'Configured fallback catalog',
       live: 'Live account catalog',
       noModels: 'No models are available yet.',
@@ -60,6 +71,7 @@ window.__ModuleLoader__.load({
       authMethod: 'Method',
       profile: 'Profile',
       reasoning: 'Reasoning',
+      default: 'default',
       context: 'Context',
       output: 'Max output',
     }
@@ -105,9 +117,20 @@ window.__ModuleLoader__.load({
       import: '导入凭据',
       signingIn: '处理中…',
       logout: '退出',
-      models: '可用模型',
+      usage: '使用量',
+      refreshUsage: '刷新使用量',
+      refreshingUsage: '刷新中…',
+      used: '已使用',
+      remaining: '剩余',
+      resets: '重置时间',
+      updated: '更新时间',
+      models: '模型选择器',
       refresh: '发现模型',
       refreshing: '发现中…',
+      selectAll: '全选',
+      deselectAll: '取消全选',
+      selected: '已选择',
+      saving: '保存中…',
       configured: '配置的后备模型目录',
       live: '账号实时模型目录',
       noModels: '尚无可用模型。',
@@ -116,6 +139,7 @@ window.__ModuleLoader__.load({
       authMethod: '方式',
       profile: 'Profile',
       reasoning: '推理',
+      default: '默认',
       context: '上下文',
       output: '最大输出',
     }
@@ -184,14 +208,14 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
 .dshk-badge{padding:2px 6px;border-radius:999px;background:#ede9fe;color:#6d28d9;font-size:9px;font-weight:750;text-transform:uppercase;letter-spacing:.04em}
 .dshk-step-head{display:flex;align-items:center;gap:9px;margin-bottom:14px}.dshk-back{padding:5px 8px}.dshk-step-title{font-size:15px;font-weight:700}.dshk-working{padding:38px 12px;text-align:center;color:#6b7280;font-size:13px}
 .dshk-auth-url{display:grid;gap:6px;margin-top:12px}.dshk-auth-url-label{color:#6b7280;font-size:11px;font-weight:650}.dshk-auth-url-row{display:flex;align-items:stretch;gap:7px}.dshk-auth-url-row .dshk-input{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}.dshk-auth-url-row .dshk-btn{flex:none}
-.dshk-list{display:grid;gap:8px}.dshk-model{padding:11px 12px;border:1px solid #eef0f3;border-radius:10px;background:#fcfcfd}
-.dshk-model-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.dshk-model-name{font-size:14px;font-weight:650}.dshk-model-id{color:#6b7280;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
-.dshk-model-desc{margin-top:4px;color:#6b7280;font-size:12px;line-height:18px}.dshk-pills{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-.dshk-pill{padding:3px 7px;border-radius:999px;background:#f1f5f9;color:#475569;font-size:11px}.dshk-pill-reason{background:#ede9fe;color:#6d28d9}
+.dshk-plan{display:inline-flex;margin-left:auto;padding:3px 8px;border-radius:999px;background:#ede9fe;color:#6d28d9;font-size:10px;font-weight:750}
+.dshk-usage{display:grid;gap:11px;margin-top:13px;padding-top:13px;border-top:1px solid #eef0f3}.dshk-usage-row{display:grid;gap:6px}.dshk-usage-top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:12px}.dshk-usage-name{font-weight:650}.dshk-usage-metric{color:#64748b;text-align:right}.dshk-bar{height:6px;overflow:hidden;border-radius:999px;background:#eef0f3}.dshk-fill{height:100%;border-radius:inherit;background:linear-gradient(90deg,#8b5cf6,#6366f1)}.dshk-usage-foot{display:flex;justify-content:space-between;gap:12px;color:#94a3b8;font-size:10px}
+.dshk-model-tools{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.dshk-link-btn{padding:0;border:0;background:transparent;color:#6d28d9;font:inherit;font-size:11px;cursor:pointer}.dshk-link-btn:hover{text-decoration:underline}.dshk-link-btn:disabled{cursor:not-allowed;opacity:.5}.dshk-selected-count{color:#94a3b8;font-size:11px}
+.dshk-list{display:grid;gap:5px}.dshk-model{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border:1px solid #eef0f3;border-radius:9px;background:#fcfcfd;cursor:pointer}.dshk-model:hover{border-color:#c4b5fd;background:#faf8ff}.dshk-model-off{opacity:.68}.dshk-check{width:15px;height:15px;margin:2px 0 0;accent-color:#7c3aed;flex:none}.dshk-model-text{display:grid;min-width:0;gap:2px}.dshk-model-name{font-size:13px;font-weight:650}.dshk-model-sub{overflow:hidden;color:#6b7280;font-size:10.5px;line-height:15px;text-overflow:ellipsis;white-space:nowrap}
 .dshk-error{margin-top:10px;padding:9px 11px;border-radius:9px;background:#fef2f2;color:#b91c1c;font-size:12px;white-space:pre-wrap}
 .dshk-empty{padding:18px;text-align:center;color:#9ca3af;font-size:13px}
-@media(max-width:620px){.dshk-grid{grid-template-columns:1fr}.dshk-field-wide{grid-column:auto}.dshk-auth-url-row{align-items:stretch;flex-direction:column}}
-@media(prefers-color-scheme:dark){.dshk-wrap{color:#f3f4f6}.dshk-card,.dshk-modal{border-color:#303642;background:#171a21}.dshk-modal-head{border-color:#303642}.dshk-status,.dshk-model{background:#1d2129;border-color:#303642;color:#d1d5db}.dshk-btn,.dshk-input,.dshk-method{border-color:#434b59;background:#20242d;color:#f3f4f6}.dshk-method:hover{border-color:#8b5cf6;background:#282333}.dshk-method-icon{background:#332a52;color:#c4b5fd}.dshk-close:hover{background:#272c35}.dshk-form{border-color:#303642}.dshk-field{color:#d1d5db}.dshk-code{border-color:#4338ca;background:#272447;color:#c7d2fe}.dshk-pill{background:#2a303a;color:#cbd5e1}.dshk-pill-reason{background:#332a52;color:#c4b5fd}}
+@media(max-width:620px){.dshk-grid{grid-template-columns:1fr}.dshk-field-wide{grid-column:auto}.dshk-auth-url-row{align-items:stretch;flex-direction:column}.dshk-head{align-items:flex-start;flex-direction:column}.dshk-usage-top{align-items:flex-start;flex-direction:column;gap:2px}.dshk-usage-metric{text-align:left}.dshk-model-sub{white-space:normal}}
+@media(prefers-color-scheme:dark){.dshk-wrap{color:#f3f4f6}.dshk-card,.dshk-modal{border-color:#303642;background:#171a21}.dshk-modal-head{border-color:#303642}.dshk-status,.dshk-model{background:#1d2129;border-color:#303642;color:#d1d5db}.dshk-model:hover{border-color:#8b5cf6;background:#282333}.dshk-btn,.dshk-input,.dshk-method{border-color:#434b59;background:#20242d;color:#f3f4f6}.dshk-method:hover{border-color:#8b5cf6;background:#282333}.dshk-method-icon{background:#332a52;color:#c4b5fd}.dshk-close:hover{background:#272c35}.dshk-form,.dshk-usage{border-color:#303642}.dshk-field{color:#d1d5db}.dshk-code{border-color:#4338ca;background:#272447;color:#c7d2fe}.dshk-bar{background:#303642}.dshk-plan{background:#332a52;color:#c4b5fd}.dshk-link-btn{color:#c4b5fd}}
 `
       document.head.appendChild(style)
     }
@@ -201,6 +225,17 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
       if (value >= 1000000) return `${(value / 1000000).toFixed(value % 1000000 === 0 ? 0 : 1)}M`
       if (value >= 1000) return `${Math.round(value / 1000)}K`
       return String(value)
+    }
+
+    function formatAmount(value) {
+      if (!Number.isFinite(value)) return '0'
+      return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value)
+    }
+
+    function formatDate(value) {
+      const date = new Date(value)
+      if (!Number.isFinite(date.getTime())) return ''
+      return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
     }
 
     function KiroLogo() {
@@ -236,6 +271,8 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
       const [authOpen, setAuthOpen] = useState(false)
       const [selectedMethod, setSelectedMethod] = useState(null)
       const [copiedAuthUrl, setCopiedAuthUrl] = useState(false)
+      const [usage, setUsage] = useState(undefined)
+      const [usageError, setUsageError] = useState('')
 
       const updateField = useCallback((name, value) => {
         setFields((current) => ({ ...current, [name]: value }))
@@ -262,6 +299,20 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         if (!status?.authenticated) return
         setAuthOpen(false)
         setSelectedMethod(null)
+      }, [status?.authenticated])
+
+      useEffect(() => {
+        if (!status?.authenticated) {
+          setUsage(undefined)
+          setUsageError('')
+          return undefined
+        }
+        let active = true
+        if (status.usage) setUsage(status.usage)
+        void api('/usage').then((value) => {
+          if (active) { setUsage(value); setUsageError('') }
+        }).catch((cause) => { if (active) setUsageError(cause.message) })
+        return () => { active = false }
       }, [status?.authenticated])
 
       const login = useCallback(async (requestedMethod) => {
@@ -370,9 +421,29 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         } catch (cause) { setError(cause.message) } finally { setBusy('') }
       }, [])
 
+      const refreshUsage = useCallback(async () => {
+        setBusy('usage'); setUsageError('')
+        try { setUsage(await api('/usage', { method: 'POST' })) }
+        catch (cause) { setUsageError(cause.message) } finally { setBusy('') }
+      }, [])
+
+      const saveModels = useCallback(async (enabledModelIds) => {
+        setBusy('models-save'); setError('')
+        try {
+          const models = await api('/models', {
+            method: 'POST', body: JSON.stringify({ enabledModelIds }),
+          })
+          setStatus((current) => ({ ...current, models }))
+        } catch (cause) { setError(cause.message) } finally { setBusy('') }
+      }, [])
+
       const flow = status?.login
       const catalog = status?.models
       const models = Array.isArray(catalog?.models) ? catalog.models : []
+      const enabledModelIds = models.filter((model) => model.enabled).map((model) => model.id)
+      const toggleModel = (id, enabled) => saveModels(enabled
+        ? [...new Set([...enabledModelIds, id])]
+        : enabledModelIds.filter((modelId) => modelId !== id))
       const accountLabel = status?.credentialSource === 'dsh'
         ? t('managed')
         : status?.credentialSource === 'kiro' ? t('external') : t('signedOut')
@@ -513,6 +584,9 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
               !status?.authenticated && React.createElement('button', {
                 className: 'dshk-btn dshk-primary', disabled: !!busy, onClick: openAuth,
               }, t('connectKiro')),
+              status?.authenticated && React.createElement('button', {
+                className: 'dshk-btn', disabled: !!busy, onClick: refreshUsage,
+              }, busy === 'usage' ? t('refreshingUsage') : t('refreshUsage')),
               status?.credentialSource === 'dsh' && React.createElement('button', { className: 'dshk-btn', disabled: !!busy, onClick: logout }, t('logout')))),
           React.createElement('div', { className: 'dshk-status' },
             React.createElement('span', { className: `dshk-dot${status?.authenticated ? ' dshk-dot-on' : ''}` }),
@@ -522,6 +596,21 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
             status.authMethod && `${t('authMethod')}: ${status.authMethod}`,
             status.authMethod && status.profileArn && ' · ',
             status.profileArn && `${t('profile')}: ${status.profileArn}`),
+          status?.authenticated && usage && React.createElement('div', { className: 'dshk-usage' },
+            React.createElement('div', { className: 'dshk-usage-top' },
+              React.createElement('span', { className: 'dshk-heading' }, t('usage')),
+              React.createElement('span', { className: 'dshk-plan' }, usage.plan)),
+            (usage.rows || []).map((row) => React.createElement('div', { className: 'dshk-usage-row', key: row.id },
+              React.createElement('div', { className: 'dshk-usage-top' },
+                React.createElement('span', { className: 'dshk-usage-name' }, row.label),
+                React.createElement('span', { className: 'dshk-usage-metric' },
+                  `${formatAmount(row.used)} / ${formatAmount(row.limit)} ${t('used')} · ${formatAmount(row.remainingPercent)}% ${t('remaining')}`)),
+              React.createElement('div', { className: 'dshk-bar' },
+                React.createElement('div', { className: 'dshk-fill', style: { width: `${Math.max(0, Math.min(100, row.remainingPercent || 0))}%` } })),
+              React.createElement('div', { className: 'dshk-usage-foot' },
+                React.createElement('span', null, row.resetAt ? `${t('resets')} ${formatDate(row.resetAt)}` : ''),
+                React.createElement('span', null, `${t('updated')} ${formatDate(usage.fetchedAt)}`))))),
+          usageError && React.createElement('div', { className: 'dshk-error' }, usageError),
           error && React.createElement('div', { className: 'dshk-error' }, error)),
         React.createElement('section', { className: 'dshk-card' },
           React.createElement('div', { className: 'dshk-head' },
@@ -529,21 +618,38 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
               React.createElement('div', { className: 'dshk-heading' }, t('models')),
               React.createElement('div', { className: 'dshk-meta' }, catalog?.source === 'live' ? t('live') : t('configured'))),
             React.createElement('button', { className: 'dshk-btn dshk-primary', disabled: !!busy || !status?.authenticated, onClick: refresh }, busy === 'models' ? t('refreshing') : t('refresh'))),
+          React.createElement('div', { className: 'dshk-model-tools' },
+            React.createElement('button', {
+              className: 'dshk-link-btn', type: 'button', disabled: !!busy || models.length === enabledModelIds.length,
+              onClick: () => saveModels(models.map((model) => model.id)),
+            }, t('selectAll')),
+            React.createElement('button', {
+              className: 'dshk-link-btn', type: 'button', disabled: !!busy || enabledModelIds.length === 0,
+              onClick: () => saveModels([]),
+            }, t('deselectAll')),
+            React.createElement('span', { className: 'dshk-selected-count' },
+              busy === 'models-save' ? t('saving') : `${enabledModelIds.length}/${models.length} ${t('selected')}`)),
           models.length === 0
             ? React.createElement('div', { className: 'dshk-empty' }, t('noModels'))
             : React.createElement('div', { className: 'dshk-list' }, models.map((model) => {
                 const context = formatTokens(model.contextWindow)
                 const output = formatTokens(model.maxTokens)
-                return React.createElement('div', { className: 'dshk-model', key: model.id },
-                  React.createElement('div', { className: 'dshk-model-head' },
-                    React.createElement('span', { className: 'dshk-model-name' }, model.name),
-                    React.createElement('span', { className: 'dshk-model-id' }, model.id)),
-                  model.description && React.createElement('div', { className: 'dshk-model-desc' }, model.description),
-                  React.createElement('div', { className: 'dshk-pills' },
-                    context && React.createElement('span', { className: 'dshk-pill' }, `${t('context')} ${context}`),
-                    output && React.createElement('span', { className: 'dshk-pill' }, `${t('output')} ${output}`),
-                    React.createElement('span', { className: `dshk-pill${model.thinking ? ' dshk-pill-reason' : ''}` },
-                      `${t('reasoning')}: ${(model.reasoningEfforts || ['off']).join(' · ')}`)))
+                const metadata = [
+                  model.id,
+                  context && `${t('context')} ${context}`,
+                  output && `${t('output')} ${output}`,
+                  `${t('reasoning')}: ${(model.reasoningEfforts || ['off']).join('/')}${model.defaultReasoningEffort ? ` (${t('default')} ${model.defaultReasoningEffort})` : ''}`,
+                ].filter(Boolean).join(' · ')
+                return React.createElement('label', {
+                  className: `dshk-model${model.enabled ? '' : ' dshk-model-off'}`, key: model.id,
+                },
+                React.createElement('input', {
+                  className: 'dshk-check', type: 'checkbox', checked: !!model.enabled, disabled: !!busy,
+                  onChange: (event) => toggleModel(model.id, event.target.checked),
+                }),
+                React.createElement('span', { className: 'dshk-model-text' },
+                  React.createElement('span', { className: 'dshk-model-name' }, model.name),
+                  React.createElement('span', { className: 'dshk-model-sub', title: metadata }, metadata)))
               }))),
         authOpen && React.createElement('div', {
           className: 'dshk-overlay',

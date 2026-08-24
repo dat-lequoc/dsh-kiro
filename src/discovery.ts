@@ -20,6 +20,7 @@ interface WireModel {
   description?: unknown
   supportedInputTypes?: unknown
   tokenLimits?: unknown
+  additionalModelRequestFieldsSchema?: unknown
 }
 
 /** Request hook used to test discovery without network access. */
@@ -124,6 +125,36 @@ export function modelSupportsThinking(modelId: string): boolean {
   return !/^(?:auto$|claude-sonnet-4$|claude-haiku-|qwen3-coder-next$)/iu.test(modelId)
 }
 
+interface ParsedEffortSchema {
+  levels: string[]
+  schemaPath: 'output_config' | 'reasoning'
+  defaultLevel?: string
+}
+
+/** Parse the same two effort-schema branches used by the installed Kiro client. */
+export function parseEffortSchema(schema: unknown): ParsedEffortSchema | undefined {
+  const root = record(schema)
+  const properties = record(root?.properties)
+  for (const schemaPath of ['output_config', 'reasoning'] as const) {
+    const branch = record(properties?.[schemaPath])
+    const effort = record(record(branch?.properties)?.effort)
+    const rawLevels = effort?.enum
+    if (!Array.isArray(rawLevels)) continue
+    const levels = [...new Set(rawLevels.filter((level): level is string =>
+      typeof level === 'string' && level.length > 0))]
+    if (levels.length === 0) continue
+    const defaultLevel = typeof effort?.default === 'string' && levels.includes(effort.default)
+      ? effort.default
+      : undefined
+    return {
+      levels,
+      schemaPath,
+      ...defaultLevel === undefined ? {} : { defaultLevel },
+    }
+  }
+  return undefined
+}
+
 /**
  * Parse Kiro's ListAvailableModels response into harness catalog entries.
  * @param body - decoded JSON response.
@@ -136,13 +167,17 @@ export function parseAvailableModels(body: unknown): KiroCatalogModel[] {
   const seen = new Set<string>()
   const models: KiroCatalogModel[] = []
   for (const raw of rawModels) {
-    const model = record(raw) as WireModel | undefined
+    const rawModel = record(raw)
+    const model = rawModel as WireModel | undefined
     if (model === undefined || typeof model.modelId !== 'string' || model.modelId.length === 0) continue
     if (seen.has(model.modelId)) continue
     seen.add(model.modelId)
     const limits = record(model.tokenLimits) as WireTokenLimits | undefined
     const contextWindow = positiveInteger(limits?.maxInputTokens)
     const maxTokens = positiveInteger(limits?.maxOutputTokens)
+    const effort = parseEffortSchema(model.additionalModelRequestFieldsSchema)
+    const hasEffortSchema = rawModel !== undefined
+      && Object.hasOwn(rawModel, 'additionalModelRequestFieldsSchema')
     models.push({
       id: model.modelId,
       ...typeof model.modelName === 'string' && model.modelName.length > 0 ? { name: model.modelName } : {},
@@ -151,7 +186,12 @@ export function parseAvailableModels(body: unknown): KiroCatalogModel[] {
         : {},
       ...contextWindow === undefined ? {} : { contextWindow },
       ...maxTokens === undefined ? {} : { maxTokens },
-      thinking: modelSupportsThinking(model.modelId),
+      thinking: hasEffortSchema ? effort !== undefined : modelSupportsThinking(model.modelId),
+      ...effort === undefined ? {} : {
+        reasoningEfforts: effort.levels,
+        defaultReasoningEffort: effort.defaultLevel,
+        effortSchemaPath: effort.schemaPath,
+      },
     })
   }
   if (models.length === 0) throw new Error('Kiro ListAvailableModels returned no usable model ids')

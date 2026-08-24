@@ -17,6 +17,13 @@ export interface KiroModelDiscoveryOptions {
 export declare function discoverKiroProfileArn(connection: Pick<KiroConnectionOptions, 'region' | 'proxyUrl'>, token: KiroToken, signal: AbortSignal, request?: ProfileDiscoveryRequest): Promise<string | undefined>;
 /** Infer whether a discovered route should expose Kiro's thinking controls. */
 export declare function modelSupportsThinking(modelId: string): boolean;
+interface ParsedEffortSchema {
+    levels: string[];
+    schemaPath: 'output_config' | 'reasoning';
+    defaultLevel?: string;
+}
+/** Parse the same two effort-schema branches used by the installed Kiro client. */
+export declare function parseEffortSchema(schema: unknown): ParsedEffortSchema | undefined;
 /**
  * Parse Kiro's ListAvailableModels response into harness catalog entries.
  * @param body - decoded JSON response.
@@ -52,3 +59,4 @@ export declare class KiroModelDiscovery {
      */
     list(connection: KiroConnectionOptions, signal: AbortSignal, force?: boolean): Promise<readonly KiroCatalogModel[]>;
 }
+export {};

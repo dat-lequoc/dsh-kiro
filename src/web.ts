@@ -8,6 +8,8 @@ import { kiroCredentialDirectory } from './auth.ts'
 import type { KiroToken } from './auth.ts'
 import { discoverKiroProfileArn } from './discovery.ts'
 import type { KiroModelDiscovery } from './discovery.ts'
+import { modelSelection } from './model-settings.ts'
+import type { FileModelSettingsStore } from './model-settings.ts'
 import {
   credentialSummary,
   deleteDeviceCredentials,
@@ -22,11 +24,14 @@ import {
 } from './login.ts'
 import type { DeviceLoginPoll, ManagedCredentials } from './login.ts'
 import { getJson, postJson } from './transport.ts'
+import type { KiroUsageService } from './usage.ts'
 
 interface WebDependencies {
   managedDirectory: string
   options: () => KiroConnectionOptions
   discovery: KiroModelDiscovery
+  modelSettings: FileModelSettingsStore
+  usage: KiroUsageService
   resolveToken: (connection: KiroConnectionOptions, signal: AbortSignal) => Promise<KiroToken>
 }
 
@@ -104,18 +109,27 @@ function publicLogin(flow: LoginFlow | undefined): Record<string, unknown> {
   }
 }
 
-function modelPayload(models: readonly KiroCatalogModel[], source: 'live' | 'configured'): unknown {
+async function modelPayload(
+  models: readonly KiroCatalogModel[],
+  source: 'live' | 'configured',
+  store: FileModelSettingsStore,
+): Promise<unknown> {
+  const selection = await modelSelection(store, models)
   return {
     source,
     fetchedAt: Date.now(),
-    models: models.map(model => ({
+    enabledModelIds: selection.enabledModelIds,
+    models: selection.models.map(model => ({
       id: model.id,
       name: model.name ?? model.id,
       description: model.description,
       contextWindow: model.contextWindow,
       maxTokens: model.maxTokens,
       thinking: model.thinking ?? true,
-      reasoningEfforts: model.thinking === false ? ['off'] : ['off', 'low', 'medium', 'high'],
+      reasoningEfforts: model.reasoningEfforts
+        ?? (model.thinking === false ? ['off'] : ['off', 'low', 'medium', 'high']),
+      defaultReasoningEffort: model.defaultReasoningEffort,
+      enabled: model.enabled,
     })),
   }
 }
@@ -148,7 +162,12 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       expiresAt: managed.expiresAt ?? external.expiresAt,
       profileArn: connection.profileArn ?? managed.profileArn ?? external.profileArn,
       login: publicLogin(login),
-      models: modelPayload(cached ?? connection.models, cached === undefined ? 'configured' : 'live'),
+      models: await modelPayload(
+        cached ?? connection.models,
+        cached === undefined ? 'configured' : 'live',
+        dependencies.modelSettings,
+      ),
+      usage: dependencies.usage.current(connection),
     }
   }
 
@@ -173,6 +192,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     }
     await saveManagedCredentials(dependencies.managedDirectory, complete)
     dependencies.discovery.clear()
+    dependencies.usage.clear()
     emitUpdated()
   }
 
@@ -371,6 +391,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               login = undefined
               await deleteDeviceCredentials(dependencies.managedDirectory)
               dependencies.discovery.clear()
+              dependencies.usage.clear()
               emitUpdated()
               sendJson(response, 200, { ok: true, value: await status() })
               return
@@ -380,15 +401,55 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               const cached = dependencies.discovery.current(connection)
               sendJson(response, 200, {
                 ok: true,
-                value: modelPayload(cached ?? connection.models, cached === undefined ? 'configured' : 'live'),
+                value: await modelPayload(
+                  cached ?? connection.models,
+                  cached === undefined ? 'configured' : 'live',
+                  dependencies.modelSettings,
+                ),
+              })
+              return
+            }
+            if (path === 'models' && request.method === 'POST') {
+              const body = await readJson(request)
+              if (!Array.isArray(body.enabledModelIds)
+                || !body.enabledModelIds.every(id => typeof id === 'string')) {
+                sendJson(response, 400, { ok: false, error: 'enabledModelIds must be an array of strings' })
+                return
+              }
+              const connection = dependencies.options()
+              const cached = dependencies.discovery.current(connection)
+              const models = cached ?? connection.models
+              await dependencies.modelSettings.setEnabledModelIds(body.enabledModelIds, models)
+              emitUpdated()
+              sendJson(response, 200, {
+                ok: true,
+                value: await modelPayload(
+                  models,
+                  cached === undefined ? 'configured' : 'live',
+                  dependencies.modelSettings,
+                ),
               })
               return
             }
             if (path === 'models/refresh' && request.method === 'POST') {
               const connection = dependencies.options()
               const models = await dependencies.discovery.list(connection, AbortSignal.timeout(15_000), true)
+              await dependencies.modelSettings.mergeCatalog(models)
               emitUpdated()
-              sendJson(response, 200, { ok: true, value: modelPayload(models, 'live') })
+              sendJson(response, 200, {
+                ok: true,
+                value: await modelPayload(models, 'live', dependencies.modelSettings),
+              })
+              return
+            }
+            if (path === 'usage' && (request.method === 'GET' || request.method === 'POST')) {
+              const connection = dependencies.options()
+              const usage = await dependencies.usage.get(
+                connection,
+                AbortSignal.timeout(15_000),
+                request.method === 'POST',
+              )
+              sendJson(response, 200, { ok: true, value: usage })
               return
             }
             if (['GET', 'POST'].includes(request.method ?? '')) {

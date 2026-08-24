@@ -44,18 +44,22 @@ const KIRO_USER_AGENT = 'aws-sdk-js/3.738.0 KiroIDE'
 const CODEWHISPERER_TARGET = 'AmazonCodeWhispererStreamingService.GenerateAssistantResponse'
 
 const OFF = ReasoningEffortId('off')
-const LOW = ReasoningEffortId('low')
-const MEDIUM = ReasoningEffortId('medium')
-const HIGH = ReasoningEffortId('high')
-/** Efforts every thinking-capable Kiro model publishes, in display order. */
-const REASONING_EFFORTS = [
-  { id: OFF, name: 'Off' },
-  { id: LOW, name: 'Low' },
-  { id: MEDIUM, name: 'Medium' },
-  { id: HIGH, name: 'High' },
-] as const
+/** Legacy efforts for configured models that predate live schema discovery. */
+const LEGACY_REASONING_EFFORTS = ['off', 'low', 'medium', 'high'] as const
 /** The only effort a thinking-disabled deployment publishes. */
 const OFF_ONLY_REASONING_EFFORTS = [{ id: OFF, name: 'Off' }] as const
+
+/** Location of Kiro's native effort field in `additionalModelRequestFields`. */
+export type KiroEffortSchemaPath = 'output_config' | 'reasoning'
+
+function effortName(effort: string): string {
+  if (effort === 'xhigh') return 'xHigh'
+  return effort.length === 0 ? effort : `${effort[0]?.toUpperCase() ?? ''}${effort.slice(1)}`
+}
+
+function effortInfo(efforts: readonly string[]): { id: ReasoningEffortId; name: string }[] {
+  return efforts.map(effort => ({ id: ReasoningEffortId(effort), name: effortName(effort) }))
+}
 
 /** One model entry advertised for the Kiro route. */
 export interface KiroCatalogModel {
@@ -71,6 +75,12 @@ export interface KiroCatalogModel {
   maxTokens?: number
   /** Whether this model honors the thinking markers. */
   thinking?: boolean
+  /** Exact effort ids advertised by this account's live model schema. */
+  reasoningEfforts?: string[]
+  /** Provider-selected effort for this model. */
+  defaultReasoningEffort?: string
+  /** Native request-object branch that receives the selected effort. */
+  effortSchemaPath?: KiroEffortSchemaPath
 }
 
 /**
@@ -122,6 +132,8 @@ export interface KiroAdapterOptions {
   ) => Promise<readonly KiroCatalogModel[]>
   /** Return the last discovered catalog synchronously for exact-model metadata. */
   currentModels?: (connection: KiroConnectionOptions) => readonly KiroCatalogModel[] | undefined
+  /** Apply the plugin-owned enabled-model selection before publishing the catalog. */
+  selectModels?: (models: readonly KiroCatalogModel[]) => Promise<readonly KiroCatalogModel[]>
 }
 
 /** Select the auth-specific upstream surface Kiro accepts. */
@@ -191,9 +203,12 @@ export class KiroAdapter extends LlmAdapter {
 
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const connection = this.config.options()
-    const models = this.config.discoverModels === undefined
+    const discovered = this.config.discoverModels === undefined
       ? connection.models
       : await this.config.discoverModels(connection, AbortSignal.timeout(10_000))
+    const models = this.config.selectModels === undefined
+      ? discovered
+      : await this.config.selectModels(discovered)
     return models.map(model => modelInfo(provider, model))
   }
 
@@ -205,10 +220,16 @@ export class KiroAdapter extends LlmAdapter {
     const connection = this.config.options()
     const catalog = this.config.currentModels?.(connection) ?? connection.models
     const configured = catalog.find(entry => entry.id === model)
-    // A model absent from the catalog still reaches the wire, so it resolves
-    // as thinking-capable: the catalog is advisory, and refusing thinking here
-    // would silently downgrade a model the deployment simply has not listed.
     const thinking = connection.defaults.thinking !== 'disabled' && (configured?.thinking ?? true)
+    const discoveredEfforts = configured?.reasoningEfforts
+    const efforts: readonly string[] = discoveredEfforts ?? (thinking ? LEGACY_REASONING_EFFORTS : ['off'])
+    const requestedDefault = connection.defaults.reasoningEffort
+    const defaultEffort = requestedDefault !== undefined && efforts.includes(requestedDefault)
+      ? requestedDefault
+      : configured?.defaultReasoningEffort !== undefined
+          && efforts.includes(configured.defaultReasoningEffort)
+        ? configured.defaultReasoningEffort
+        : efforts.includes('high') ? 'high' : efforts[0] ?? 'off'
     return Promise.resolve({
       ...configured === undefined
         ? { provider, id: model, name: model, inputModalities: ['text' as const] }
@@ -216,10 +237,7 @@ export class KiroAdapter extends LlmAdapter {
       context: { contextWindow: configured?.contextWindow ?? connection.defaultContextWindow },
       ...configured?.maxTokens === undefined ? {} : { defaultMaxTokens: configured.maxTokens },
       reasoning: thinking
-        ? {
-          efforts: REASONING_EFFORTS,
-          defaultEffort: ReasoningEffortId(connection.defaults.reasoningEffort ?? 'off'),
-        }
+        ? { efforts: effortInfo(efforts), defaultEffort: ReasoningEffortId(defaultEffort) }
         : { efforts: OFF_ONLY_REASONING_EFFORTS, defaultEffort: OFF },
     })
   }
@@ -284,9 +302,25 @@ export class KiroAdapter extends LlmAdapter {
     const url = kiroRequestEndpoint(token, region)
     // Prepared before the transport call so a serialization failure keeps its
     // own diagnosis instead of being relabeled a transport failure.
-    const body = JSON.stringify(
-      serializeRequest(options, connection.defaults, randomUUID(), profileArn),
-    )
+    const catalog = this.config.currentModels?.(connection) ?? connection.models
+    const selected = catalog.find(model => model.id === options.model)
+    const nativeEffort = selected?.effortSchemaPath === undefined
+      || selected.reasoningEfforts === undefined
+      ? undefined
+      : {
+          schemaPath: selected.effortSchemaPath,
+          levels: selected.reasoningEfforts,
+          ...selected.defaultReasoningEffort === undefined
+            ? {}
+            : { defaultLevel: selected.defaultReasoningEffort },
+        }
+    const body = JSON.stringify(serializeRequest(
+      options,
+      connection.defaults,
+      randomUUID(),
+      profileArn,
+      nativeEffort,
+    ))
     const response = await post({
       url,
       headers: {

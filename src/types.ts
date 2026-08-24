@@ -58,6 +58,7 @@ export type WireHistoryEntry =
 /** The complete request body. */
 export interface WireRequest {
   profileArn?: string
+  additionalModelRequestFields?: Record<string, unknown>
   conversationState: {
     chatTriggerType: 'MANUAL'
     conversationId: string

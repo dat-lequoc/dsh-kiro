@@ -100,6 +100,58 @@ describe('serializeRequest', () => {
     expect(currentOf(request).content).toBe('hi')
   })
 
+  it('sends discovered Claude efforts through output_config without prompt markers', () => {
+    const request = serializeRequest(
+      {
+        provider: 'kiro',
+        model: 'claude-opus-5',
+        messages: [user('hi')],
+        reasoningEffort: 'max' as never,
+        system: 'PERSONA',
+      },
+      {},
+      'conv-1',
+      undefined,
+      {
+        schemaPath: 'output_config',
+        levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        defaultLevel: 'high',
+      },
+    )
+    expect(request.additionalModelRequestFields).toEqual({ output_config: { effort: 'max' } })
+    expect(currentOf(request).content).toBe('PERSONA\n\nhi')
+  })
+
+  it('uses the live GPT default and reasoning schema path', () => {
+    const request = serializeRequest(
+      { provider: 'kiro', model: 'gpt-5.6-sol', messages: [user('hi')] },
+      {},
+      'conv-1',
+      undefined,
+      {
+        schemaPath: 'reasoning',
+        levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+        defaultLevel: 'high',
+      },
+    )
+    expect(request.additionalModelRequestFields).toEqual({ reasoning: { effort: 'high' } })
+  })
+
+  it('rejects an effort absent from the selected model’s live schema', () => {
+    expect(() => serializeRequest(
+      {
+        provider: 'kiro',
+        model: 'claude-opus-4.6',
+        messages: [user('hi')],
+        reasoningEffort: 'xhigh' as never,
+      },
+      {},
+      'conv-1',
+      undefined,
+      { schemaPath: 'output_config', levels: ['low', 'medium', 'high', 'max'] },
+    )).toThrowError(expect.objectContaining({ code: 'UNSUPPORTED_REASONING_EFFORT' }))
+  })
+
   it.each([['low', 4000], ['medium', 12000], ['high', 24000]] as const)(
     'publishes the %s effort budget as %i tokens',
     (effort, budget) => {

@@ -15,6 +15,8 @@ import type { KiroToken } from './auth.ts';
 export declare const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300000;
 /** Default combined request/response context capacity for a Kiro model. */
 export declare const DEFAULT_CONTEXT_WINDOW = 200000;
+/** Location of Kiro's native effort field in `additionalModelRequestFields`. */
+export type KiroEffortSchemaPath = 'output_config' | 'reasoning';
 /** One model entry advertised for the Kiro route. */
 export interface KiroCatalogModel {
     /** Wire model id, sent as `modelId` on every turn. */
@@ -29,6 +31,12 @@ export interface KiroCatalogModel {
     maxTokens?: number;
     /** Whether this model honors the thinking markers. */
     thinking?: boolean;
+    /** Exact effort ids advertised by this account's live model schema. */
+    reasoningEfforts?: string[];
+    /** Provider-selected effort for this model. */
+    defaultReasoningEffort?: string;
+    /** Native request-object branch that receives the selected effort. */
+    effortSchemaPath?: KiroEffortSchemaPath;
 }
 /**
  * Validated connection facts for one operation. The plugin's
@@ -75,6 +83,8 @@ export interface KiroAdapterOptions {
     discoverModels?: (connection: KiroConnectionOptions, signal: AbortSignal) => Promise<readonly KiroCatalogModel[]>;
     /** Return the last discovered catalog synchronously for exact-model metadata. */
     currentModels?: (connection: KiroConnectionOptions) => readonly KiroCatalogModel[] | undefined;
+    /** Apply the plugin-owned enabled-model selection before publishing the catalog. */
+    selectModels?: (models: readonly KiroCatalogModel[]) => Promise<readonly KiroCatalogModel[]>;
 }
 /** Select the auth-specific upstream surface Kiro accepts. */
 export declare function kiroRequestEndpoint(token: KiroToken, region: string): string;

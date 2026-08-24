@@ -4,7 +4,8 @@
  * Three properties of the wire operation drive the whole translation:
  *
  * - There is no system slot. The system prompt is prepended to the content of
- *   the first user turn, which is also where the thinking-mode markers go.
+ *   the first user turn. Models without a live effort schema retain the legacy
+ *   thinking markers; discovered models receive their native request field.
  * - The last user turn is `currentMessage`, not a history entry, and
  *   `conversationState.history` must strictly alternate user, assistant, user,
  *   …, so gaps are filled with continuation placeholders.
@@ -40,7 +41,14 @@ export interface RequestDefaults {
   /** Deployment thinking policy; `disabled` refuses every request-level enable. */
   thinking?: 'enabled' | 'disabled' | undefined
   /** Default thinking effort when a request names none. */
-  reasoningEffort?: 'off' | 'low' | 'medium' | 'high' | undefined
+  reasoningEffort?: string | undefined
+}
+
+/** Live model-specific effort contract returned by ListAvailableModels. */
+export interface NativeEffortConfig {
+  schemaPath: 'output_config' | 'reasoning'
+  levels: readonly string[]
+  defaultLevel?: string
 }
 
 /** Maximum thinking length published for each effort, in tokens. */
@@ -52,8 +60,8 @@ const THINKING_BUDGETS = { low: 4_000, medium: 12_000, high: 24_000 } as const
  * @returns the same value, narrowed.
  * @throws `LlmError('UNSUPPORTED_REASONING_EFFORT')` for any other value.
  */
-function narrowEffort(
-  effort: NonNullable<GenerateOptions['reasoningEffort']>,
+function narrowLegacyEffort(
+  effort: string,
 ): 'off' | 'low' | 'medium' | 'high' {
   if (effort === 'off' || effort === 'low' || effort === 'medium' || effort === 'high') {
     return effort as 'off' | 'low' | 'medium' | 'high'
@@ -72,19 +80,32 @@ function narrowEffort(
 function resolveEffort(
   options: GenerateOptions,
   defaults: RequestDefaults,
-): 'off' | 'low' | 'medium' | 'high' {
+  native?: NativeEffortConfig,
+): string | undefined {
   // A title's small budget must produce visible text, never spend itself thinking.
-  if (options.purpose === 'session-title') return 'off'
-  const effort = options.reasoningEffort === undefined
-    ? defaults.reasoningEffort
-    : narrowEffort(options.reasoningEffort)
-  if (defaults.thinking === 'disabled' && effort !== undefined && effort !== 'off') {
+  if (options.purpose === 'session-title') return undefined
+  const requested = options.reasoningEffort === undefined
+    ? defaults.reasoningEffort ?? native?.defaultLevel
+    : String(options.reasoningEffort)
+  if (defaults.thinking === 'disabled' && requested !== undefined
+    && requested !== 'off' && requested !== 'none') {
     throw new LlmError(
-      `Kiro deployment does not support reasoning effort "${effort}"`,
+      `Kiro deployment does not support reasoning effort "${requested}"`,
       'UNSUPPORTED_REASONING_EFFORT',
     )
   }
-  return effort ?? 'off'
+  if (defaults.thinking === 'disabled') return undefined
+  if (native !== undefined) {
+    if (requested === undefined) return undefined
+    if (!native.levels.includes(requested)) {
+      throw new LlmError(
+        `Kiro model does not advertise reasoning effort "${requested}"`,
+        'UNSUPPORTED_REASONING_EFFORT',
+      )
+    }
+    return requested
+  }
+  return requested === undefined ? 'off' : narrowLegacyEffort(requested)
 }
 
 /**
@@ -93,13 +114,30 @@ function resolveEffort(
  * @param effort - the resolved effort.
  * @returns the system text, empty when there is nothing to say.
  */
-function systemText(options: GenerateOptions, effort: 'off' | 'low' | 'medium' | 'high'): string {
+function systemText(
+  options: GenerateOptions,
+  effort: string | undefined,
+  native?: NativeEffortConfig,
+): string {
   const persona = options.system ?? ''
-  if (effort === 'off') return persona
+  if (effort === undefined || effort === 'off' || effort === 'none' || native !== undefined) return persona
+  const legacyEffort = narrowLegacyEffort(effort)
+  if (legacyEffort === 'off') return persona
   // Kiro carries thinking as prompt markers rather than a request field; the
   // open-weight and Claude routes both honor this same pair.
-  const markers = `<thinking_mode>enabled</thinking_mode><max_thinking_length>${THINKING_BUDGETS[effort]}</max_thinking_length>`
+  const markers = `<thinking_mode>enabled</thinking_mode><max_thinking_length>${THINKING_BUDGETS[legacyEffort]}</max_thinking_length>`
   return persona.length === 0 ? markers : `${markers}\n${persona}`
+}
+
+/** Build Kiro's model-specific native effort object. */
+export function buildEffortRequestFields(
+  effort: string | undefined,
+  native?: NativeEffortConfig,
+): Record<string, unknown> | undefined {
+  if (effort === undefined || native === undefined) return undefined
+  return native.schemaPath === 'output_config'
+    ? { output_config: { effort } }
+    : { reasoning: { effort } }
 }
 
 /** Join the text blocks of one message. */
@@ -251,6 +289,7 @@ function userMessage(
  * @param defaults - adapter-level thinking defaults.
  * @param conversationId - identifier for this request's conversation.
  * @param profileArn - CodeWhisperer profile the account bills against.
+ * @param nativeEffort - live effort levels and their provider request path.
  * @returns the request body.
  * @throws `LlmError` when the request carries images, an unusable tool name,
  *   an unsupported effort, or no messages at all.
@@ -260,11 +299,12 @@ export function serializeRequest(
   defaults: RequestDefaults,
   conversationId: string,
   profileArn?: string,
+  nativeEffort?: NativeEffortConfig,
 ): WireRequest {
   if (options.messages.length === 0) {
     throw new LlmError('Kiro requires at least one message', 'INVALID_REQUEST')
   }
-  const effort = resolveEffort(options, defaults)
+  const effort = resolveEffort(options, defaults, nativeEffort)
   const turns = foldTurns(options.messages)
   if (turns.at(-1)?.role === 'assistant') {
     turns.push({ role: 'user', turn: { text: CONTINUATION, toolResults: [] } })
@@ -329,7 +369,7 @@ export function serializeRequest(
     },
   }))
 
-  const system = systemText(options, effort)
+  const system = systemText(options, effort, nativeEffort)
   const currentMessage = userMessage(
     { text, toolResults: matched },
     options.model,
@@ -352,8 +392,10 @@ export function serializeRequest(
     }
   }
 
+  const additionalModelRequestFields = buildEffortRequestFields(effort, nativeEffort)
   return {
     ...profileArn === undefined ? {} : { profileArn },
+    ...additionalModelRequestFields === undefined ? {} : { additionalModelRequestFields },
     conversationState: {
       chatTriggerType: 'MANUAL',
       conversationId,
