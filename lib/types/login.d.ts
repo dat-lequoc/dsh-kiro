@@ -10,7 +10,7 @@ export type LoginGetTransport = (url: string, headers: Record<string, string>, s
     body: unknown;
 }>;
 export interface DeviceLoginOptions {
-    authMethod?: 'builder-id' | 'idc';
+    authMethod?: 'builder-id' | 'idc' | 'google' | 'github';
     startUrl?: string;
 }
 export interface DeviceLoginSession {
@@ -22,7 +22,7 @@ export interface DeviceLoginSession {
     intervalSeconds: number;
     expiresAt: number;
     region: string;
-    authMethod: 'builder-id' | 'idc';
+    authMethod: 'builder-id' | 'idc' | 'google' | 'github';
     startUrl: string;
 }
 export type DeviceLoginPoll = {
@@ -54,23 +54,12 @@ export interface CredentialSummary {
     authMethod?: KiroAuthMethod;
     profileArn?: string;
 }
-export interface SocialLoginSession {
-    provider: 'google' | 'github';
-    state: string;
-    codeVerifier: string;
-    authUrl: string;
-    expiresAt: number;
-}
 /**
- * Begin an AWS Builder ID or IAM Identity Center device authorization.
+ * Begin Kiro's coded device authorization for a free or IAM Identity Center account.
  */
 export declare function startDeviceLogin(region: string, requestJson: LoginJsonTransport, signal: AbortSignal, options?: DeviceLoginOptions): Promise<DeviceLoginSession>;
 /** Poll one device authorization once. */
 export declare function pollDeviceLogin(session: DeviceLoginSession, requestJson: LoginJsonTransport, signal: AbortSignal): Promise<DeviceLoginPoll>;
-/** Start Kiro desktop social OAuth with PKCE and a manual kiro:// callback. */
-export declare function startSocialLogin(provider: 'google' | 'github'): SocialLoginSession;
-/** Complete Google/GitHub auth from the callback URL Kiro redirected to. */
-export declare function completeSocialLogin(callbackUrl: string, session: SocialLoginSession, requestJson: LoginJsonTransport, signal: AbortSignal): Promise<ManagedCredentials>;
 /** Validate and refresh an imported Kiro refresh token. */
 export declare function importRefreshToken(input: {
     refreshToken: string;

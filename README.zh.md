@@ -46,7 +46,7 @@ pnpm dsh --profile web
 
 ### Web
 
-打开 **Settings → Kiro** 并选择登录方式：Builder ID 使用标准设备授权；IAM Identity Center 还需填写 `https://<company>.awsapps.com/start` 与 region；Google/GitHub 登录后需把完整的 `kiro://kiro.kiroAgent/authenticate-success?...` 回调 URL 粘贴回页面；也可直接导入 refresh token、Kiro API key 或 Microsoft external-IdP JSON。
+打开 **Settings → Kiro** 并选择登录方式：Builder ID 使用标准设备授权；IAM Identity Center 还需填写 `https://<company>.awsapps.com/start` 与 region；Google/GitHub 使用 Kiro 的远程设备流程，页面会显示一次性 `XXXX-XXXX` 验证码和授权网址，插件会等待浏览器授权完成；也可直接导入 refresh token、Kiro API key 或 Microsoft external-IdP JSON。
 
 OAuth 登录完成后，插件会调用 `ListAvailableProfiles`，把选中的 profile ARN 与自管凭据一起保存，并按 ARN 中的 region 发起推理请求。
 
@@ -78,7 +78,7 @@ kiro-login --logout
 
 内置登录只写入 `$DSH_HOME/storages/kiro-auth`（通常为 `~/.dsh/storages/kiro-auth`），token 与设备注册文件权限为 `0600`。**退出**只删除这些由插件管理的文件。
 
-自管 Builder/IDC 凭据通过对应 region 的 AWS OIDC 刷新；社交/导入 token 通过 Kiro desktop auth 服务刷新；Microsoft external-IdP 只允许向受信任的 Microsoft 登录域提交 refresh token。轮换后的自管 refresh token 与发现到的 profile ARN 会原子写回。API key 作为长期凭据使用，并发送 Kiro 要求的 `TokenType: API_KEY`。
+自管设备流程凭据（Builder ID、Google、GitHub 与 IDC）通过对应 region 的 AWS OIDC 刷新；单独导入的 refresh token 通过 Kiro desktop auth 服务刷新；Microsoft external-IdP 只允许向受信任的 Microsoft 登录域提交 refresh token。轮换后的自管 refresh token 与发现到的 profile ARN 会原子写回。API key 作为长期凭据使用，并发送 Kiro 要求的 `TokenType: API_KEY`。
 
 若自管凭据不存在，适配器会读取 Kiro IDE/CLI 的 `~/.aws/sso/cache/kiro-auth-token.json` 及其引用的 client-registration 文件，不会删除或覆盖 Kiro 自己的凭据；Kiro 自有凭据刷新后只保存在内存中。
 

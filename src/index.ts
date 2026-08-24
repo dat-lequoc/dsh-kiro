@@ -54,7 +54,6 @@ export { discoverKiroProfileArn, KiroModelDiscovery, modelSupportsThinking, pars
 export { assertMicrosoftTokenEndpoint, normalizeExternalIdpCredentials } from './external-idp.ts'
 export {
   BUILDER_START_URL,
-  completeSocialLogin,
   credentialSummary,
   deleteDeviceCredentials,
   importApiKey,
@@ -64,7 +63,6 @@ export {
   saveDeviceCredentials,
   saveManagedCredentials,
   startDeviceLogin,
-  startSocialLogin,
 } from './login.ts'
 export type {
   DeviceCredentials,
@@ -72,7 +70,6 @@ export type {
   DeviceLoginPoll,
   DeviceLoginSession,
   ManagedCredentials,
-  SocialLoginSession,
 } from './login.ts'
 export { credentialDirectory } from './paths.ts'
 export { assertKiroProfileArn, profileRegion } from './profile.ts'

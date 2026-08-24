@@ -20,8 +20,8 @@ window.__ModuleLoader__.load({
       recommended: 'Recommended',
       builderDesc: 'Best for most users. Sign in with a free AWS Builder ID.',
       idcDesc: 'Use your organization’s AWS IAM Identity Center.',
-      googleDesc: 'Continue with Google using Kiro’s secure browser flow.',
-      githubDesc: 'Continue with GitHub using Kiro’s secure browser flow.',
+      googleDesc: 'Get a one-time code, then choose Google in Kiro’s browser flow.',
+      githubDesc: 'Get a one-time code, then choose GitHub in Kiro’s browser flow.',
       refreshDesc: 'Paste an existing refresh token from Kiro IDE.',
       apiDesc: 'Use a long-lived Kiro or CodeWhisperer API key.',
       externalDesc: 'Import CLIProxyAPI Microsoft external-IdP JSON.',
@@ -45,10 +45,8 @@ window.__ModuleLoader__.load({
       clientId: 'OIDC client ID (optional)',
       clientSecret: 'OIDC client secret (optional)',
       credentialJson: 'CLIProxyAPI-compatible credential JSON',
-      callbackUrl: 'Paste the kiro:// callback URL',
       login: 'Continue',
       import: 'Import credentials',
-      complete: 'Complete login',
       signingIn: 'Working…',
       logout: 'Sign out',
       models: 'Available models',
@@ -59,7 +57,6 @@ window.__ModuleLoader__.load({
       noModels: 'No models are available yet.',
       code: 'Device code',
       pending: 'Complete authorization in the browser. This page will update automatically.',
-      socialPending: 'After the browser redirects to kiro://, copy the full URL and paste it below.',
       authMethod: 'Method',
       profile: 'Profile',
       reasoning: 'Reasoning',
@@ -79,8 +76,8 @@ window.__ModuleLoader__.load({
       recommended: '推荐',
       builderDesc: '适合大多数用户，使用免费的 AWS Builder ID 登录。',
       idcDesc: '使用组织提供的 AWS IAM Identity Center。',
-      googleDesc: '通过 Kiro 的安全浏览器流程使用 Google 登录。',
-      githubDesc: '通过 Kiro 的安全浏览器流程使用 GitHub 登录。',
+      googleDesc: '获取一次性验证码，然后在 Kiro 浏览器流程中选择 Google。',
+      githubDesc: '获取一次性验证码，然后在 Kiro 浏览器流程中选择 GitHub。',
       refreshDesc: '粘贴 Kiro IDE 中已有的 refresh token。',
       apiDesc: '使用长期有效的 Kiro 或 CodeWhisperer API key。',
       externalDesc: '导入 CLIProxyAPI Microsoft external-IdP JSON。',
@@ -104,10 +101,8 @@ window.__ModuleLoader__.load({
       clientId: 'OIDC 客户端 ID（可选）',
       clientSecret: 'OIDC 客户端密钥（可选）',
       credentialJson: '兼容 CLIProxyAPI 的凭据 JSON',
-      callbackUrl: '粘贴完整的 kiro:// 回调 URL',
       login: '继续',
       import: '导入凭据',
-      complete: '完成登录',
       signingIn: '处理中…',
       logout: '退出',
       models: '可用模型',
@@ -118,7 +113,6 @@ window.__ModuleLoader__.load({
       noModels: '尚无可用模型。',
       code: '设备验证码',
       pending: '请在浏览器中完成授权，本页面会自动更新。',
-      socialPending: '浏览器跳转到 kiro:// 后，请复制完整 URL 并粘贴到下方。',
       authMethod: '方式',
       profile: 'Profile',
       reasoning: '推理',
@@ -176,7 +170,7 @@ window.__ModuleLoader__.load({
 .dshk-field{display:grid;gap:5px;color:#4b5563;font-size:12px}.dshk-field-wide{grid-column:1/-1}
 .dshk-input{box-sizing:border-box;width:100%;min-width:0;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;background:#fff;color:#111827;font:inherit;font-size:13px}
 textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
-.dshk-details{overflow-wrap:anywhere}.dshk-callback{display:grid;gap:8px;margin-top:10px}
+.dshk-details{overflow-wrap:anywhere}
 .dshk-overlay{position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:20px;background:rgba(15,23,42,.58);backdrop-filter:blur(3px)}
 .dshk-modal{box-sizing:border-box;width:min(640px,100%);max-height:min(760px,calc(100vh - 40px));overflow:auto;border:1px solid #e5e7eb;border-radius:16px;background:#fff;box-shadow:0 24px 70px rgba(15,23,42,.3)}
 .dshk-modal-head{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid #eef0f3;background:inherit}
@@ -362,17 +356,6 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         setCopiedAuthUrl(false)
       }, [status?.login?.authUrl])
 
-      const completeSocial = useCallback(async () => {
-        setBusy('callback'); setError('')
-        try {
-          await api('/login/social/complete', {
-            method: 'POST',
-            body: JSON.stringify({ callbackUrl: fields.callbackUrl }),
-          })
-          await load()
-        } catch (cause) { setError(cause.message) } finally { setBusy('') }
-      }, [fields.callbackUrl, load])
-
       const logout = useCallback(async () => {
         setBusy('logout'); setError('')
         try { setStatus(await api('/logout', { method: 'POST' })) }
@@ -492,22 +475,10 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
               }, `‹ ${t('back')}`),
               React.createElement('div', { className: 'dshk-step-title' },
                 methodChoices.find((choice) => choice.id === flow.method)?.title || flow.method)),
-            flow.kind === 'device'
-              ? React.createElement('div', { className: 'dshk-code' },
-                  t('code'), React.createElement('strong', null, flow.userCode),
-                  React.createElement('div', { className: 'dshk-meta' }, t('pending')),
-                  authorizationControls)
-              : React.createElement('div', { className: 'dshk-code' },
-                  React.createElement('div', null, t('socialPending')),
-                  authorizationControls,
-                  React.createElement('div', { className: 'dshk-callback' },
-                    React.createElement('input', {
-                      className: 'dshk-input', value: fields.callbackUrl || '', placeholder: 'kiro://kiro.kiroAgent/authenticate-success?…',
-                      onChange: (event) => updateField('callbackUrl', event.target.value),
-                    }),
-                    React.createElement('button', {
-                      className: 'dshk-btn dshk-primary', disabled: !!busy, onClick: completeSocial,
-                    }, busy === 'callback' ? t('signingIn') : t('complete')))),
+            React.createElement('div', { className: 'dshk-code' },
+              t('code'), React.createElement('strong', null, flow.userCode),
+              React.createElement('div', { className: 'dshk-meta' }, t('pending')),
+              authorizationControls),
             error && React.createElement('div', { className: 'dshk-error' }, error))
         : null
 

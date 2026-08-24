@@ -19,7 +19,6 @@ const SCOPES = [
   'codewhisperer:analysis',
   'codewhisperer:conversations',
 ]
-const SOCIAL_REDIRECT = 'kiro://kiro.kiroAgent/authenticate-success'
 
 export type LoginJsonTransport = (
   url: string,
@@ -34,7 +33,7 @@ export type LoginGetTransport = (
 ) => Promise<{ status: number; body: unknown }>
 
 export interface DeviceLoginOptions {
-  authMethod?: 'builder-id' | 'idc'
+  authMethod?: 'builder-id' | 'idc' | 'google' | 'github'
   startUrl?: string
 }
 
@@ -47,7 +46,7 @@ export interface DeviceLoginSession {
   intervalSeconds: number
   expiresAt: number
   region: string
-  authMethod: 'builder-id' | 'idc'
+  authMethod: 'builder-id' | 'idc' | 'google' | 'github'
   startUrl: string
 }
 
@@ -78,14 +77,6 @@ export interface CredentialSummary {
   region?: string
   authMethod?: KiroAuthMethod
   profileArn?: string
-}
-
-export interface SocialLoginSession {
-  provider: 'google' | 'github'
-  state: string
-  codeVerifier: string
-  authUrl: string
-  expiresAt: number
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -130,7 +121,7 @@ function startUrl(value: string): string {
 }
 
 /**
- * Begin an AWS Builder ID or IAM Identity Center device authorization.
+ * Begin Kiro's coded device authorization for a free or IAM Identity Center account.
  */
 export async function startDeviceLogin(
   region: string,
@@ -139,7 +130,11 @@ export async function startDeviceLogin(
   options: DeviceLoginOptions = {},
 ): Promise<DeviceLoginSession> {
   const selectedRegion = assertKiroRegion(region.trim() || 'us-east-1')
-  const authMethod = options.authMethod === 'idc' ? 'idc' : 'builder-id'
+  const authMethod = options.authMethod === 'idc'
+    || options.authMethod === 'google'
+    || options.authMethod === 'github'
+    ? options.authMethod
+    : 'builder-id'
   const selectedStartUrl = startUrl(authMethod === 'idc'
     ? options.startUrl ?? ''
     : BUILDER_START_URL)
@@ -245,69 +240,6 @@ export async function pollDeviceLogin(
       startUrl: session.startUrl,
       ...profileArn === undefined ? {} : { profileArn: assertKiroProfileArn(profileArn) },
     },
-  }
-}
-
-/** Start Kiro desktop social OAuth with PKCE and a manual kiro:// callback. */
-export function startSocialLogin(provider: 'google' | 'github'): SocialLoginSession {
-  const codeVerifier = randomBytes(32).toString('base64url')
-  const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url')
-  const state = randomBytes(24).toString('base64url')
-  const idp = provider === 'google' ? 'Google' : 'Github'
-  const url = new URL(`${KIRO_AUTH_SERVICE}/login`)
-  url.searchParams.set('idp', idp)
-  url.searchParams.set('redirect_uri', SOCIAL_REDIRECT)
-  url.searchParams.set('code_challenge', codeChallenge)
-  url.searchParams.set('code_challenge_method', 'S256')
-  url.searchParams.set('state', state)
-  url.searchParams.set('prompt', 'select_account')
-  return { provider, state, codeVerifier, authUrl: url.toString(), expiresAt: Date.now() + 600_000 }
-}
-
-/** Complete Google/GitHub auth from the callback URL Kiro redirected to. */
-export async function completeSocialLogin(
-  callbackUrl: string,
-  session: SocialLoginSession,
-  requestJson: LoginJsonTransport,
-  signal: AbortSignal,
-): Promise<ManagedCredentials> {
-  if (Date.now() >= session.expiresAt) throw new Error('Kiro social login expired; start again')
-  let callback: URL
-  try {
-    callback = new URL(callbackUrl.trim())
-  } catch (error: unknown) {
-    throw new Error('Kiro social callback URL is invalid', { cause: error })
-  }
-  if (callback.protocol !== 'kiro:' || callback.hostname.toLowerCase() !== 'kiro.kiroagent'
-    || callback.pathname !== '/authenticate-success') {
-    throw new Error('Kiro social callback URL has an unexpected destination')
-  }
-  if (callback.searchParams.get('state') !== session.state) throw new Error('Kiro social callback state does not match')
-  const callbackError = callback.searchParams.get('error_description') ?? callback.searchParams.get('error')
-  if (callbackError !== null) throw new Error(`Kiro social login failed: ${callbackError}`)
-  const code = callback.searchParams.get('code')
-  if (code === null || code.length === 0) throw new Error('Kiro social callback contains no authorization code')
-  const response = await requestJson(`${KIRO_AUTH_SERVICE}/oauth/token`, {
-    code,
-    code_verifier: session.codeVerifier,
-    redirect_uri: SOCIAL_REDIRECT,
-  }, signal)
-  if (response.status !== 200) {
-    throw new Error(`Kiro social token exchange failed: ${providerError(response.body, `HTTP ${response.status}`)}`)
-  }
-  const body = record(response.body)
-  const accessToken = body === undefined ? undefined : stringField(body, 'accessToken', 'access_token')
-  const refreshToken = body === undefined ? undefined : stringField(body, 'refreshToken', 'refresh_token')
-  if (accessToken === undefined || refreshToken === undefined) throw new Error('Kiro social token exchange returned incomplete credentials')
-  const expiresIn = Math.max(1, body === undefined ? 3600 : numberField(body, 'expiresIn', 'expires_in') ?? 3600)
-  const profileArn = body === undefined ? undefined : stringField(body, 'profileArn', 'profile_arn')
-  return {
-    accessToken,
-    refreshToken,
-    expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
-    region: 'us-east-1',
-    authMethod: session.provider,
-    ...profileArn === undefined ? {} : { profileArn: assertKiroProfileArn(profileArn) },
   }
 }
 

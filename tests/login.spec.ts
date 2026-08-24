@@ -4,7 +4,6 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clearTokenCache, resolveTokenFromDirectories } from '../src/auth.ts'
 import {
-  completeSocialLogin,
   credentialSummary,
   deleteDeviceCredentials,
   importApiKey,
@@ -12,7 +11,6 @@ import {
   pollDeviceLogin,
   saveDeviceCredentials,
   startDeviceLogin,
-  startSocialLogin,
 } from '../src/login.ts'
 
 const temporaryDirectories: string[] = []
@@ -179,38 +177,35 @@ describe('managed credentials', () => {
 })
 
 describe('additional Kiro auth methods', () => {
-  it('binds social login to its PKCE state and exchanges the callback code', async () => {
-    const session = startSocialLogin('github')
-    const authUrl = new URL(session.authUrl)
-    expect(authUrl.searchParams.get('idp')).toBe('Github')
-    expect(authUrl.searchParams.get('state')).toBe(session.state)
-    expect(authUrl.searchParams.get('code_challenge_method')).toBe('S256')
-    const request = vi.fn().mockResolvedValue({
-      status: 200,
-      body: {
-        accessToken: 'social-access',
-        refreshToken: 'social-refresh',
-        expiresIn: 3600,
-        profileArn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/social',
-      },
-    })
-    const callback = `kiro://kiro.kiroAgent/authenticate-success?code=code&state=${session.state}`
-    await expect(completeSocialLogin(callback, session, request, new AbortController().signal))
-      .resolves.toMatchObject({
-        accessToken: 'social-access',
-        authMethod: 'github',
-        profileArn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/social',
+  it('starts Google login through Kiro\'s coded device flow', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({ status: 200, body: { clientId: 'client', clientSecret: 'secret' } })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: {
+          deviceCode: 'device',
+          userCode: 'XWIS-WIJO',
+          verificationUriComplete: 'https://view.awsapps.com/start/#/device?user_code=XWIS-WIJO',
+        },
       })
-    expect(request.mock.calls[0]?.[1]).toMatchObject({
-      code: 'code',
-      code_verifier: session.codeVerifier,
+    const signal = new AbortController().signal
+    const session = await startDeviceLogin('us-east-1', request, signal, { authMethod: 'google' })
+
+    expect(session).toMatchObject({
+      authMethod: 'google',
+      userCode: 'XWIS-WIJO',
+      startUrl: 'https://view.awsapps.com/start',
     })
-    await expect(completeSocialLogin(
-      'kiro://kiro.kiroAgent/authenticate-success?code=code&state=wrong',
-      session,
-      request,
-      new AbortController().signal,
-    )).rejects.toThrow(/state does not match/u)
+    expect(request.mock.calls[1]?.[1]).toMatchObject({ startUrl: 'https://view.awsapps.com/start' })
+
+    const poll = vi.fn().mockResolvedValue({
+      status: 200,
+      body: { accessToken: 'access', refreshToken: 'refresh', expiresIn: 3600 },
+    })
+    await expect(pollDeviceLogin(session, poll, signal)).resolves.toMatchObject({
+      status: 'completed',
+      credentials: { authMethod: 'google', clientId: 'client' },
+    })
   })
 
   it('validates API keys on the Amazon Q surface with TokenType', async () => {

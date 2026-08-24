@@ -2,9 +2,7 @@
 
 import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
-import { createInterface } from 'node:readline/promises'
 import {
-  completeSocialLogin,
   credentialDirectory,
   deleteDeviceCredentials,
   discoverKiroProfileArn,
@@ -17,7 +15,6 @@ import {
   postJsonWithHeaders,
   saveManagedCredentials,
   startDeviceLogin,
-  startSocialLogin,
 } from '../lib/index.js'
 
 function option(name) {
@@ -66,7 +63,7 @@ try {
 Methods:
   --method builder-id             AWS Builder ID device login (default)
   --method idc --start-url URL    IAM Identity Center device login
-  --method google|github          Social login with manual kiro:// callback
+  --method google|github          Google/GitHub device-code login
   --method refresh-token          Import KIRO_REFRESH_TOKEN or --refresh-token
   --method api-key                Import KIRO_API_KEY or --api-key
   --method external-idp           Import CLIProxyAPI JSON from --credentials-file
@@ -91,7 +88,7 @@ Common options:
   const requestJson = (url, body, signal) => postJson(url, body, proxyUrl, signal)
   let credentials
 
-  if (method === 'builder-id' || method === 'idc') {
+  if (method === 'builder-id' || method === 'idc' || method === 'google' || method === 'github') {
     const session = await startDeviceLogin(region, requestJson, controller.signal, {
       authMethod: method,
       ...(method === 'idc' ? { startUrl: option('--start-url') ?? process.env.KIRO_START_URL ?? '' } : {}),
@@ -111,20 +108,6 @@ Common options:
       credentials = result.credentials
       break
     }
-  } else if (method === 'google' || method === 'github') {
-    const session = startSocialLogin(method)
-    console.log(`Open ${session.authUrl}`)
-    if (!process.argv.includes('--no-open')) openBrowser(session.authUrl)
-    let callbackUrl = option('--callback-url')
-    if (callbackUrl === undefined) {
-      const input = createInterface({ input: process.stdin, output: process.stdout })
-      try {
-        callbackUrl = await input.question('Paste the full kiro:// callback URL: ')
-      } finally {
-        input.close()
-      }
-    }
-    credentials = await completeSocialLogin(callbackUrl, session, requestJson, controller.signal)
   } else if (method === 'refresh-token') {
     credentials = await importRefreshToken({
       refreshToken: option('--refresh-token') ?? process.env.KIRO_REFRESH_TOKEN ?? '',

@@ -50,7 +50,7 @@ Open **Settings → Kiro** and select a method:
 
 - **AWS Builder ID** uses the standard device-code flow.
 - **IAM Identity Center** uses a device flow with your `https://<company>.awsapps.com/start` URL and region.
-- **Google / GitHub** opens Kiro social authorization. Paste the resulting full `kiro://kiro.kiroAgent/authenticate-success?...` callback URL into the page to complete the PKCE exchange.
+- **Google / GitHub** uses Kiro's remote device flow. The page shows a one-time `XXXX-XXXX` code and authorization URL; continue with the chosen provider in the browser while the plugin waits for completion.
 - **Refresh token**, **Kiro API key**, and **Microsoft external IdP JSON** validate/import an existing credential without exposing it back to the browser status API.
 
 After an OAuth login, the plugin queries `ListAvailableProfiles`, saves the selected profile ARN with its managed credential, and uses the ARN's region for inference.
@@ -83,7 +83,7 @@ Run `kiro-login --help` for all options. `KIRO_REGION`, `KIRO_PROXY_URL`, `KIRO_
 
 The bundled login writes only to `$DSH_HOME/storages/kiro-auth` (normally `~/.dsh/storages/kiro-auth`). Token and device-registration files are mode `0600`. **Sign out** deletes only these plugin-owned files.
 
-Managed Builder/IDC credentials refresh through regional AWS OIDC; social/imported credentials refresh through Kiro's desktop auth service; Microsoft external-IdP credentials refresh only against approved Microsoft login hosts. Rotated managed refresh tokens and discovered profile ARNs are written atomically. API keys are treated as long-lived and carry Kiro's required `TokenType: API_KEY` header.
+Managed device-flow credentials (Builder ID, Google, GitHub, and IDC) refresh through regional AWS OIDC; standalone imported refresh tokens use Kiro's desktop auth service; Microsoft external-IdP credentials refresh only against approved Microsoft login hosts. Rotated managed refresh tokens and discovered profile ARNs are written atomically. API keys are treated as long-lived and carry Kiro's required `TokenType: API_KEY` header.
 
 When managed credentials are absent, the adapter reads Kiro IDE/CLI's `~/.aws/sso/cache/kiro-auth-token.json` and its referenced client-registration file. It never deletes or overwrites Kiro-owned credentials; refreshed Kiro-owned tokens remain in memory only.
 

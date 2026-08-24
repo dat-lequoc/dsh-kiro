@@ -9,7 +9,6 @@ import type { KiroToken } from './auth.ts'
 import { discoverKiroProfileArn } from './discovery.ts'
 import type { KiroModelDiscovery } from './discovery.ts'
 import {
-  completeSocialLogin,
   credentialSummary,
   deleteDeviceCredentials,
   importApiKey,
@@ -18,9 +17,8 @@ import {
   pollDeviceLogin,
   saveManagedCredentials,
   startDeviceLogin,
-  startSocialLogin,
 } from './login.ts'
-import type { DeviceLoginSession, ManagedCredentials, SocialLoginSession } from './login.ts'
+import type { DeviceLoginSession, ManagedCredentials } from './login.ts'
 import { getJson, postJson } from './transport.ts'
 
 interface WebDependencies {
@@ -32,10 +30,9 @@ interface WebDependencies {
 
 interface LoginFlow {
   status: 'pending' | 'complete' | 'error'
-  kind: 'device' | 'social'
+  kind: 'device'
   method: string
   deviceSession?: DeviceLoginSession
-  socialSession?: SocialLoginSession
   authUrl?: string
   userCode?: string
   startedAt: number
@@ -102,7 +99,6 @@ function publicLogin(flow: LoginFlow | undefined): Record<string, unknown> {
     ...flow.completedAt === undefined ? {} : { completedAt: flow.completedAt },
     ...flow.authUrl === undefined ? {} : { authUrl: flow.authUrl },
     ...flow.userCode === undefined ? {} : { userCode: flow.userCode },
-    ...flow.kind === 'social' && flow.status === 'pending' ? { needsCallback: true } : {},
     ...flow.error === undefined ? {} : { error: flow.error },
   }
 }
@@ -196,7 +192,8 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     loginController?.abort('starting a new Kiro login')
     const controller = new AbortController()
     loginController = controller
-    if (body.method !== 'builder-id' && body.method !== 'idc') {
+    if (body.method !== 'builder-id' && body.method !== 'idc'
+      && body.method !== 'google' && body.method !== 'github') {
       throw new Error('Unsupported Kiro device login method')
     }
     const method = body.method
@@ -251,39 +248,6 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
         }
       }
     })()
-    return publicLogin(login)
-  }
-
-  const beginSocial = (method: 'google' | 'github'): unknown => {
-    loginController?.abort('starting a new Kiro social login')
-    loginController = new AbortController()
-    const session = startSocialLogin(method)
-    login = {
-      status: 'pending',
-      kind: 'social',
-      method,
-      socialSession: session,
-      authUrl: session.authUrl,
-      startedAt: Date.now(),
-    }
-    return publicLogin(login)
-  }
-
-  const completeSocial = async (body: Record<string, unknown>): Promise<unknown> => {
-    const flow = login
-    const session = flow?.socialSession
-    const controller = loginController
-    if (flow?.kind !== 'social' || flow.status !== 'pending' || session === undefined || controller === undefined) {
-      throw new Error('No Kiro social login is waiting for a callback')
-    }
-    const connection = dependencies.options()
-    const credentials = await completeSocialLogin(
-      requiredText(body.callbackUrl, 'Kiro callback URL'),
-      session,
-      (url, value, signal) => postJson(url, value, connection.proxyUrl, signal),
-      controller.signal,
-    )
-    await finish(credentials, flow, controller.signal)
     return publicLogin(login)
   }
 
@@ -346,14 +310,8 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
             if (path === 'login' && request.method === 'POST') {
               const body = await readJson(request)
               const method = optionalText(body.method) ?? 'builder-id'
-              const value = method === 'google' || method === 'github'
-                ? beginSocial(method)
-                : await beginDevice({ ...body, method })
+              const value = await beginDevice({ ...body, method })
               sendJson(response, 200, { ok: true, value })
-              return
-            }
-            if (path === 'login/social/complete' && request.method === 'POST') {
-              sendJson(response, 200, { ok: true, value: await completeSocial(await readJson(request)) })
               return
             }
             if (path === 'login/cancel' && request.method === 'POST') {
