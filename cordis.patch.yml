@@ -1,0 +1,16 @@
+# The dsh-kiro bundle patch: mounts the Kiro adapter into any profile that
+# installs this package. Applied after the profile's other bundle layers, so
+# the user's own `cordis.patch.yml` still outranks this row by id.
+#
+# No proxy, region, or profile ARN is inlined. Kiro authorizes Claude models by
+# request egress, and the permitted egress differs per deployment, so it is a
+# user fact rather than a package default: supply it in the profile patch layer
+# or the `llm-kiro:` settings section, which is hot-reloaded.
+#
+# Credentials stay out of composition. The bundled settings page and
+# `kiro-login` command store a managed Builder ID sign-in under DSH home; when
+# that is absent, the adapter falls back to Kiro IDE/CLI's SSO cache.
+
+- insert:
+    - id: llm-kiro
+      name: dsh-kiro

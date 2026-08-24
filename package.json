@@ -1,0 +1,108 @@
+{
+  "name": "dsh-kiro",
+  "description": "Kiro provider for DeepSeek Harness with Builder ID login, live model discovery, and reasoning effort controls",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "author": {
+    "name": "Dat LQ.",
+    "url": "https://github.com/dat-lequoc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dat-lequoc/dsh-kiro.git"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "kiro",
+    "codewhisperer",
+    "claude",
+    "opus",
+    "oauth",
+    "reasoning",
+    "llm-adapter"
+  ],
+  "homepage": "https://github.com/dat-lequoc/dsh-kiro#readme",
+  "bugs": {
+    "url": "https://github.com/dat-lequoc/dsh-kiro/issues"
+  },
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./invariant": {
+      "types": "./lib/types/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./client": "./client/index.cjs",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/invariant.js",
+    "lib/types/**/*.d.ts",
+    "bin",
+    "client",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "bin": {
+    "kiro-login": "bin/kiro-login.mjs"
+  },
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.json && tsdown",
+    "check": "npm run typecheck && npm test && npm run build && node --check client/index.cjs && node --check bin/kiro-login.mjs",
+    "pack:dist": "mkdir -p dist && npm pack --pack-destination dist",
+    "typecheck": "tsc -b tsconfig.json --noEmit false --emitDeclarationOnly",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-home-paths": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-invariants": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-timeout": "^0.1.0-rc.6"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-home-paths": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-invariants": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-timeout": "^0.1.0-rc.6",
+    "@types/node": "^22.10.0",
+    "tsdown": "^0.15.6",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.8"
+  }
+}
