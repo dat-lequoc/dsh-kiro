@@ -28,6 +28,9 @@ window.__ModuleLoader__.load({
       back: 'Back',
       close: 'Close',
       openBrowser: 'Open browser',
+      authorizationUrl: 'Authorization URL',
+      copy: 'Copy',
+      copied: 'Copied',
       method: 'Login method',
       builderId: 'AWS Builder ID',
       idc: 'IAM Identity Center',
@@ -84,6 +87,9 @@ window.__ModuleLoader__.load({
       back: '返回',
       close: '关闭',
       openBrowser: '打开浏览器',
+      authorizationUrl: '授权 URL',
+      copy: '复制',
+      copied: '已复制',
       method: '登录方式',
       builderId: 'AWS Builder ID',
       idc: 'IAM Identity Center',
@@ -183,13 +189,14 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
 .dshk-method-main{min-width:0;flex:1}.dshk-method-title{display:flex;align-items:center;gap:7px;font-size:14px;font-weight:700}.dshk-method-desc{margin-top:3px;color:#6b7280;font-size:12px;line-height:17px}.dshk-chevron{align-self:center;color:#94a3b8;font-size:20px}
 .dshk-badge{padding:2px 6px;border-radius:999px;background:#ede9fe;color:#6d28d9;font-size:9px;font-weight:750;text-transform:uppercase;letter-spacing:.04em}
 .dshk-step-head{display:flex;align-items:center;gap:9px;margin-bottom:14px}.dshk-back{padding:5px 8px}.dshk-step-title{font-size:15px;font-weight:700}.dshk-working{padding:38px 12px;text-align:center;color:#6b7280;font-size:13px}
+.dshk-auth-url{display:grid;gap:6px;margin-top:12px}.dshk-auth-url-label{color:#6b7280;font-size:11px;font-weight:650}.dshk-auth-url-row{display:flex;align-items:stretch;gap:7px}.dshk-auth-url-row .dshk-input{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}.dshk-auth-url-row .dshk-btn{flex:none}
 .dshk-list{display:grid;gap:8px}.dshk-model{padding:11px 12px;border:1px solid #eef0f3;border-radius:10px;background:#fcfcfd}
 .dshk-model-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.dshk-model-name{font-size:14px;font-weight:650}.dshk-model-id{color:#6b7280;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
 .dshk-model-desc{margin-top:4px;color:#6b7280;font-size:12px;line-height:18px}.dshk-pills{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .dshk-pill{padding:3px 7px;border-radius:999px;background:#f1f5f9;color:#475569;font-size:11px}.dshk-pill-reason{background:#ede9fe;color:#6d28d9}
 .dshk-error{margin-top:10px;padding:9px 11px;border-radius:9px;background:#fef2f2;color:#b91c1c;font-size:12px;white-space:pre-wrap}
 .dshk-empty{padding:18px;text-align:center;color:#9ca3af;font-size:13px}
-@media(max-width:620px){.dshk-grid{grid-template-columns:1fr}.dshk-field-wide{grid-column:auto}}
+@media(max-width:620px){.dshk-grid{grid-template-columns:1fr}.dshk-field-wide{grid-column:auto}.dshk-auth-url-row{align-items:stretch;flex-direction:column}}
 @media(prefers-color-scheme:dark){.dshk-wrap{color:#f3f4f6}.dshk-card,.dshk-modal{border-color:#303642;background:#171a21}.dshk-modal-head{border-color:#303642}.dshk-status,.dshk-model{background:#1d2129;border-color:#303642;color:#d1d5db}.dshk-btn,.dshk-input,.dshk-method{border-color:#434b59;background:#20242d;color:#f3f4f6}.dshk-method:hover{border-color:#8b5cf6;background:#282333}.dshk-method-icon{background:#332a52;color:#c4b5fd}.dshk-close:hover{background:#272c35}.dshk-form{border-color:#303642}.dshk-field{color:#d1d5db}.dshk-code{border-color:#4338ca;background:#272447;color:#c7d2fe}.dshk-pill{background:#2a303a;color:#cbd5e1}.dshk-pill-reason{background:#332a52;color:#c4b5fd}}
 `
       document.head.appendChild(style)
@@ -234,6 +241,7 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
       const [fields, setFields] = useState({})
       const [authOpen, setAuthOpen] = useState(false)
       const [selectedMethod, setSelectedMethod] = useState(null)
+      const [copiedAuthUrl, setCopiedAuthUrl] = useState(false)
 
       const updateField = useCallback((name, value) => {
         setFields((current) => ({ ...current, [name]: value }))
@@ -266,8 +274,6 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         const activeMethod = typeof requestedMethod === 'string' ? requestedMethod : method
         setBusy('login'); setError('')
         const imported = activeMethod === 'refresh-token' || activeMethod === 'api-key' || activeMethod === 'external-idp'
-        const popup = imported ? null : window.open('about:blank', '_blank')
-        if (popup) popup.opener = null
         try {
           if (imported) {
             const payload = activeMethod === 'refresh-token'
@@ -291,10 +297,8 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
             body: JSON.stringify({ method: activeMethod, region: fields.region, startUrl: fields.startUrl }),
           })
           setStatus((current) => ({ ...current, login: flow }))
-          if (flow.authUrl && popup) popup.location.replace(flow.authUrl)
-          else if (flow.authUrl) window.open(flow.authUrl, '_blank', 'noopener,noreferrer')
           await load()
-        } catch (cause) { popup?.close(); setError(cause.message) } finally { setBusy('') }
+        } catch (cause) { setError(cause.message) } finally { setBusy('') }
       }, [fields, load, method])
 
       const chooseMethod = useCallback((nextMethod) => {
@@ -335,6 +339,28 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
           setSelectedMethod(null)
         } catch (cause) { setError(cause.message) } finally { setBusy('') }
       }, [])
+
+      const copyAuthorizationUrl = useCallback(async () => {
+        const url = status?.login?.authUrl
+        if (typeof url !== 'string') return
+        try {
+          await navigator.clipboard.writeText(url)
+        } catch {
+          const input = document.createElement('textarea')
+          input.value = url
+          input.style.position = 'fixed'
+          input.style.opacity = '0'
+          document.body.appendChild(input)
+          input.select()
+          document.execCommand('copy')
+          input.remove()
+        }
+        setCopiedAuthUrl(true)
+      }, [status?.login?.authUrl])
+
+      useEffect(() => {
+        setCopiedAuthUrl(false)
+      }, [status?.login?.authUrl])
 
       const completeSocial = useCallback(async () => {
         setBusy('callback'); setError('')
@@ -442,6 +468,22 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
             React.createElement('span', { className: 'dshk-method-desc' }, choice.description)),
           React.createElement('span', { className: 'dshk-chevron', 'aria-hidden': 'true' }, '›')))))
 
+      const authorizationControls = typeof flow?.authUrl === 'string'
+        ? React.createElement('div', { className: 'dshk-auth-url' },
+            React.createElement('div', { className: 'dshk-auth-url-label' }, t('authorizationUrl')),
+            React.createElement('div', { className: 'dshk-auth-url-row' },
+              React.createElement('input', {
+                className: 'dshk-input', value: flow.authUrl, readOnly: true,
+                onFocus: (event) => event.target.select(),
+              }),
+              React.createElement('button', {
+                className: 'dshk-btn', type: 'button', onClick: copyAuthorizationUrl,
+              }, copiedAuthUrl ? t('copied') : t('copy')),
+              React.createElement('a', {
+                className: 'dshk-btn dshk-primary', href: flow.authUrl, target: '_blank', rel: 'noopener noreferrer',
+              }, t('openBrowser'))))
+        : null
+
       const pendingFlow = flow?.status === 'pending'
         ? React.createElement(React.Fragment, null,
             React.createElement('div', { className: 'dshk-step-head' },
@@ -454,16 +496,10 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
               ? React.createElement('div', { className: 'dshk-code' },
                   t('code'), React.createElement('strong', null, flow.userCode),
                   React.createElement('div', { className: 'dshk-meta' }, t('pending')),
-                  flow.authUrl && React.createElement('div', { className: 'dshk-actions', style: { marginTop: '10px' } },
-                    React.createElement('a', {
-                      className: 'dshk-btn dshk-primary', href: flow.authUrl, target: '_blank', rel: 'noopener noreferrer',
-                    }, t('openBrowser'))))
+                  authorizationControls)
               : React.createElement('div', { className: 'dshk-code' },
                   React.createElement('div', null, t('socialPending')),
-                  flow.authUrl && React.createElement('div', { className: 'dshk-actions', style: { marginTop: '10px' } },
-                    React.createElement('a', {
-                      className: 'dshk-btn', href: flow.authUrl, target: '_blank', rel: 'noopener noreferrer',
-                    }, t('openBrowser'))),
+                  authorizationControls,
                   React.createElement('div', { className: 'dshk-callback' },
                     React.createElement('input', {
                       className: 'dshk-input', value: fields.callbackUrl || '', placeholder: 'kiro://kiro.kiroAgent/authenticate-success?…',
