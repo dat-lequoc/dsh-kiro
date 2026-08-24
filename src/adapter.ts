@@ -31,6 +31,7 @@ import type { RequestDefaults } from './serialize.ts'
 import { post } from './transport.ts'
 import { translate } from './translate.ts'
 import type { KiroToken } from './auth.ts'
+import { profileRegion } from './profile.ts'
 
 /** Default maximum idle interval while an outstanding provider read is pending. */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
@@ -40,6 +41,7 @@ export const DEFAULT_CONTEXT_WINDOW = 200_000
 const STREAM_IDLE_TIMEOUT_CODE = 'LLM_STREAM_IDLE_TIMEOUT'
 /** User agent Kiro's own IDE sends; the service gates model access on it. */
 const KIRO_USER_AGENT = 'aws-sdk-js/3.738.0 KiroIDE'
+const CODEWHISPERER_TARGET = 'AmazonCodeWhispererStreamingService.GenerateAssistantResponse'
 
 const OFF = ReasoningEffortId('off')
 const LOW = ReasoningEffortId('low')
@@ -120,6 +122,20 @@ export interface KiroAdapterOptions {
   ) => Promise<readonly KiroCatalogModel[]>
   /** Return the last discovered catalog synchronously for exact-model metadata. */
   currentModels?: (connection: KiroConnectionOptions) => readonly KiroCatalogModel[] | undefined
+}
+
+/** Select the auth-specific upstream surface Kiro accepts. */
+export function kiroRequestEndpoint(token: KiroToken, region: string): string {
+  return token.authMethod === 'idc' || token.authMethod === 'external_idp'
+    ? `https://codewhisperer.${region}.amazonaws.com/generateAssistantResponse`
+    : `https://q.${region}.amazonaws.com/generateAssistantResponse`
+}
+
+/** Add the token discriminator required by API-key and external-IdP auth. */
+export function kiroTokenTypeHeaders(token: KiroToken): Record<string, string> {
+  if (token.authMethod === 'api_key') return { TokenType: 'API_KEY' }
+  if (token.authMethod === 'external_idp') return { TokenType: 'EXTERNAL_IDP' }
+  return {}
 }
 
 /** Describe one catalog entry for selector consumers. */
@@ -261,17 +277,24 @@ export class KiroAdapter extends LlmAdapter {
     onActivity: () => void,
   ): AsyncIterable<StreamChunk> {
     const token = await this.config.resolveToken(connection, signal)
-    const region = connection.region ?? token.region
+    const profileArn = connection.profileArn ?? token.profileArn
+    const region = profileArn === undefined
+      ? connection.region ?? token.region
+      : profileRegion(profileArn)
+    const url = kiroRequestEndpoint(token, region)
     // Prepared before the transport call so a serialization failure keeps its
     // own diagnosis instead of being relabeled a transport failure.
     const body = JSON.stringify(
-      serializeRequest(options, connection.defaults, randomUUID(), connection.profileArn),
+      serializeRequest(options, connection.defaults, randomUUID(), profileArn),
     )
     const response = await post({
-      url: `https://q.${region}.amazonaws.com/generateAssistantResponse`,
+      url,
       headers: {
         'content-type': 'application/json',
+        accept: 'application/vnd.amazon.eventstream',
         authorization: `Bearer ${token.accessToken}`,
+        ...url.includes('://codewhisperer.') ? { 'x-amz-target': CODEWHISPERER_TARGET } : {},
+        ...kiroTokenTypeHeaders(token),
         'x-amzn-kiro-agent-mode': 'vibe',
         // Kiro authorizes by client identity: a request whose `user-agent`
         // does not name its IDE is refused with "Your subscription does not

@@ -13,6 +13,8 @@ export interface KiroModelDiscoveryOptions {
     profileRequestJson?: ProfileDiscoveryRequest;
     cacheTtlMs?: number;
 }
+/** Resolve the best CodeWhisperer profile ARN for one OAuth credential. */
+export declare function discoverKiroProfileArn(connection: Pick<KiroConnectionOptions, 'region' | 'proxyUrl'>, token: KiroToken, signal: AbortSignal, request?: ProfileDiscoveryRequest): Promise<string | undefined>;
 /** Infer whether a discovered route should expose Kiro's thinking controls. */
 export declare function modelSupportsThinking(modelId: string): boolean;
 /**

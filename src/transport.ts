@@ -235,6 +235,26 @@ export async function postJsonWithHeaders(
   return responseJson(response)
 }
 
+/** POST an OAuth form and parse its small JSON response. */
+export async function postForm(
+  url: string,
+  body: URLSearchParams,
+  proxyUrl: string | undefined,
+  signal: AbortSignal,
+): Promise<{ status: number; body: unknown }> {
+  const response = await post({
+    url,
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      accept: 'application/json',
+    },
+    body: body.toString(),
+    signal,
+    ...proxyUrl === undefined ? {} : { proxyUrl },
+  })
+  return responseJson(response)
+}
+
 /**
  * GET and parse a small JSON response through the same optional proxy.
  * @param url - absolute HTTPS URL.

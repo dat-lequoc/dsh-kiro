@@ -66,6 +66,11 @@ export declare function postJsonWithHeaders(url: string, body: unknown, headers:
     status: number;
     body: unknown;
 }>;
+/** POST an OAuth form and parse its small JSON response. */
+export declare function postForm(url: string, body: URLSearchParams, proxyUrl: string | undefined, signal: AbortSignal): Promise<{
+    status: number;
+    body: unknown;
+}>;
 /**
  * GET and parse a small JSON response through the same optional proxy.
  * @param url - absolute HTTPS URL.

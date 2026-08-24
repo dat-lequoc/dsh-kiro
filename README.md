@@ -1,15 +1,23 @@
 # dsh-kiro
 
+<p align="center">
+  <img src="assets/kiro-icon.svg" alt="Kiro" width="96" height="96">
+</p>
+
 English | [中文](README.zh.md)
 
-Kiro provider for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), with AWS Builder ID login, automatic reuse of Kiro IDE credentials, live account model discovery, Claude/open-weight streaming, tool calls, and reasoning effort controls.
+Kiro provider for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), with multi-method Kiro login, automatic token/profile refresh, live account model discovery, Claude/open-weight streaming, tool calls, and reasoning effort controls.
 
 The bundle registers the `kiro` provider route and mounts itself when installed. No API key or manual `cordis.yml` entry is required.
 
+This is an independent integration and is not affiliated with or endorsed by AWS or Kiro. Kiro and its logo are Amazon trademarks; see [NOTICE.md](NOTICE.md).
+
 ## Features
 
-- Sign in from **Settings → Kiro** with the AWS Builder ID device flow.
-- Sign in from a terminal with the included `kiro-login` command.
+- Sign in from **Settings → Kiro** with AWS Builder ID, IAM Identity Center, Google, or GitHub.
+- Import a Kiro refresh token, API key, or CLIProxyAPI-compatible Microsoft external-IdP credential.
+- Sign in with the same methods from a terminal using the included `kiro-login` command.
+- Discover and persist the account's CodeWhisperer profile ARN so refreshed tokens keep the correct profile.
 - Fall back to Kiro IDE/CLI's existing `~/.aws/sso/cache` sign-in when no plugin-managed login exists.
 - Query Kiro's `ListAvailableModels` endpoint so the model picker reflects the signed-in account (Opus, Sonnet, Haiku, and available open-weight routes).
 - Expose `off`, `low`, `medium`, and `high` reasoning efforts on thinking-capable models.
@@ -38,7 +46,14 @@ Built `lib/` artifacts are committed, so a GitHub install does not need to execu
 
 ### Web
 
-Open **Settings → Kiro**, select **Sign in**, and approve the displayed Builder ID code in the browser. The page polls the device flow, stores the completed credential below DSH home, and refreshes the model catalog.
+Open **Settings → Kiro** and select a method:
+
+- **AWS Builder ID** uses the standard device-code flow.
+- **IAM Identity Center** uses a device flow with your `https://<company>.awsapps.com/start` URL and region.
+- **Google / GitHub** opens Kiro social authorization. Paste the resulting full `kiro://kiro.kiroAgent/authenticate-success?...` callback URL into the page to complete the PKCE exchange.
+- **Refresh token**, **Kiro API key**, and **Microsoft external IdP JSON** validate/import an existing credential without exposing it back to the browser status API.
+
+After an OAuth login, the plugin queries `ListAvailableProfiles`, saves the selected profile ARN with its managed credential, and uses the ARN's region for inference.
 
 ### Terminal
 
@@ -52,27 +67,34 @@ Useful options:
 
 ```sh
 kiro-login --region eu-central-1
+kiro-login --method idc --start-url https://company.awsapps.com/start --region eu-central-1
+kiro-login --method github
+KIRO_REFRESH_TOKEN='…' kiro-login --method refresh-token
+KIRO_API_KEY='…' kiro-login --method api-key
+kiro-login --method external-idp --credentials-file ./kiro-auth.json
 kiro-login --proxy http://user:pass@proxy.example:8080
 kiro-login --no-open
 kiro-login --logout
 ```
 
-`KIRO_REGION` and `KIRO_PROXY_URL` are equivalent environment variables for the CLI.
+Run `kiro-login --help` for all options. `KIRO_REGION`, `KIRO_PROXY_URL`, `KIRO_START_URL`, `KIRO_REFRESH_TOKEN`, and `KIRO_API_KEY` are supported environment variables. Environment variables or a protected credential file are preferable to secret command-line arguments.
 
 ## Credentials
 
 The bundled login writes only to `$DSH_HOME/storages/kiro-auth` (normally `~/.dsh/storages/kiro-auth`). Token and device-registration files are mode `0600`. **Sign out** deletes only these plugin-owned files.
 
-When managed credentials are absent, the adapter reads Kiro IDE/CLI's `~/.aws/sso/cache/kiro-auth-token.json` and its referenced client-registration file. It never deletes or overwrites Kiro-owned credentials. Expired access tokens are refreshed in memory through AWS OIDC.
+Managed Builder/IDC credentials refresh through regional AWS OIDC; social/imported credentials refresh through Kiro's desktop auth service; Microsoft external-IdP credentials refresh only against approved Microsoft login hosts. Rotated managed refresh tokens and discovered profile ARNs are written atomically. API keys are treated as long-lived and carry Kiro's required `TokenType: API_KEY` header.
+
+When managed credentials are absent, the adapter reads Kiro IDE/CLI's `~/.aws/sso/cache/kiro-auth-token.json` and its referenced client-registration file. It never deletes or overwrites Kiro-owned credentials; refreshed Kiro-owned tokens remain in memory only.
 
 Credential priority is:
 
-1. dsh-kiro managed Builder ID login
+1. dsh-kiro managed credential
 2. Kiro IDE/CLI SSO cache
 
 ## Model discovery and reasoning
 
-The adapter asks `https://q.<region>.amazonaws.com/ListAvailableModels` for the signed-in account and caches the result for five minutes. **Settings → Kiro → Discover models** forces a refresh. Model names, descriptions, input limits, and output limits are projected into the DSH catalog. If discovery is temporarily unavailable, the configured fallback catalog remains usable; unlisted model IDs are still passed through to Kiro.
+The adapter asks the auth-appropriate Amazon Q/CodeWhisperer surface for the signed-in account and caches the result for five minutes. **Settings → Kiro → Discover models** forces a refresh. Model names, descriptions, input limits, and output limits are projected into the DSH catalog. If discovery is temporarily unavailable, the configured fallback catalog remains usable; unlisted model IDs are still passed through to Kiro.
 
 Thinking-capable routes advertise four effort IDs:
 
@@ -158,7 +180,7 @@ npm run pack:dist
 
 ## Acknowledgements
 
-The Kiro transport foundation is derived under MIT from [caopu16/dsh-llm-kiro](https://github.com/caopu16/dsh-llm-kiro). Login and REST behavior were cross-checked against [dat-lequoc/Kiro-Go](https://github.com/dat-lequoc/Kiro-Go), and the DSH Web integration follows the installable-bundle pattern demonstrated by [LiZhenNet/dsh-antigravity](https://github.com/LiZhenNet/dsh-antigravity). Original copyright notices are retained in [LICENSE](LICENSE).
+The Kiro transport foundation is derived under MIT from [caopu16/dsh-llm-kiro](https://github.com/caopu16/dsh-llm-kiro). Login, profile-ARN, API-key, and external-IdP behavior was cross-checked against [decolua/9router](https://github.com/decolua/9router) and [dat-lequoc/Kiro-Go](https://github.com/dat-lequoc/Kiro-Go). The DSH Web integration follows the installable-bundle pattern demonstrated by [LiZhenNet/dsh-antigravity](https://github.com/LiZhenNet/dsh-antigravity). Original copyright notices are retained in [LICENSE](LICENSE).
 
 ## License
 

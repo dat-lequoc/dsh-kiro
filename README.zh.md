@@ -1,15 +1,23 @@
 # dsh-kiro
 
+<p align="center">
+  <img src="assets/kiro-icon.svg" alt="Kiro" width="96" height="96">
+</p>
+
 [English](README.md) | 中文
 
-面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Kiro provider，支持 AWS Builder ID 登录、复用 Kiro IDE 凭据、实时发现账号模型、Claude/开放权重模型流式调用、工具调用与 reasoning effort。
+面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Kiro provider，支持多种 Kiro 登录、token/profile 自动刷新、实时发现账号模型、Claude/开放权重模型流式调用、工具调用与 reasoning effort。
 
 插件安装后会自动注册 `kiro` provider 并挂载 bundle，不需要 API key，也不需要手工添加 `cordis.yml` 条目。
 
+这是一个独立集成项目，与 AWS 或 Kiro 没有关联，也未获其赞助或认可。Kiro 及其徽标是 Amazon 的商标；详见 [NOTICE.md](NOTICE.md)。
+
 ## 功能
 
-- 在 **Settings → Kiro** 中完成 AWS Builder ID 设备登录。
-- 使用随包提供的 `kiro-login` 命令从终端登录。
+- 在 **Settings → Kiro** 中使用 AWS Builder ID、IAM Identity Center、Google 或 GitHub 登录。
+- 导入 Kiro refresh token、API key 或兼容 CLIProxyAPI 的 Microsoft external-IdP 凭据。
+- 使用随包提供的 `kiro-login` 命令从终端完成同类登录。
+- 自动发现并保存账号的 CodeWhisperer profile ARN，使刷新后的 token 仍使用正确 profile。
 - 没有插件自管登录时，自动回退到 Kiro IDE/CLI 的 `~/.aws/sso/cache` 凭据。
 - 调用 Kiro `ListAvailableModels`，让模型选择器反映当前账号实际可用的 Opus、Sonnet、Haiku 与开放权重模型。
 - 为支持 thinking 的模型提供 `off`、`low`、`medium`、`high` 四档 reasoning effort。
@@ -38,7 +46,9 @@ pnpm dsh --profile web
 
 ### Web
 
-打开 **Settings → Kiro**，点击 **登录**，然后在浏览器中批准显示的 Builder ID 验证码。页面会轮询设备授权、把凭据保存到 DSH home，并刷新模型目录。
+打开 **Settings → Kiro** 并选择登录方式：Builder ID 使用标准设备授权；IAM Identity Center 还需填写 `https://<company>.awsapps.com/start` 与 region；Google/GitHub 登录后需把完整的 `kiro://kiro.kiroAgent/authenticate-success?...` 回调 URL 粘贴回页面；也可直接导入 refresh token、Kiro API key 或 Microsoft external-IdP JSON。
+
+OAuth 登录完成后，插件会调用 `ListAvailableProfiles`，把选中的 profile ARN 与自管凭据一起保存，并按 ARN 中的 region 发起推理请求。
 
 ### 终端
 
@@ -52,27 +62,34 @@ dsh plugin --profile web exec kiro-login
 
 ```sh
 kiro-login --region eu-central-1
+kiro-login --method idc --start-url https://company.awsapps.com/start --region eu-central-1
+kiro-login --method github
+KIRO_REFRESH_TOKEN='…' kiro-login --method refresh-token
+KIRO_API_KEY='…' kiro-login --method api-key
+kiro-login --method external-idp --credentials-file ./kiro-auth.json
 kiro-login --proxy http://user:pass@proxy.example:8080
 kiro-login --no-open
 kiro-login --logout
 ```
 
-CLI 也支持环境变量 `KIRO_REGION` 与 `KIRO_PROXY_URL`。
+执行 `kiro-login --help` 可查看全部选项。CLI 支持 `KIRO_REGION`、`KIRO_PROXY_URL`、`KIRO_START_URL`、`KIRO_REFRESH_TOKEN` 与 `KIRO_API_KEY`；敏感值建议放环境变量或受保护的凭据文件，不要直接放命令行参数。
 
 ## 凭据
 
 内置登录只写入 `$DSH_HOME/storages/kiro-auth`（通常为 `~/.dsh/storages/kiro-auth`），token 与设备注册文件权限为 `0600`。**退出**只删除这些由插件管理的文件。
 
-若自管凭据不存在，适配器会读取 Kiro IDE/CLI 的 `~/.aws/sso/cache/kiro-auth-token.json` 及其引用的 client-registration 文件，不会删除或覆盖 Kiro 自己的凭据。过期 access token 通过 AWS OIDC 刷新，并只缓存在内存中。
+自管 Builder/IDC 凭据通过对应 region 的 AWS OIDC 刷新；社交/导入 token 通过 Kiro desktop auth 服务刷新；Microsoft external-IdP 只允许向受信任的 Microsoft 登录域提交 refresh token。轮换后的自管 refresh token 与发现到的 profile ARN 会原子写回。API key 作为长期凭据使用，并发送 Kiro 要求的 `TokenType: API_KEY`。
+
+若自管凭据不存在，适配器会读取 Kiro IDE/CLI 的 `~/.aws/sso/cache/kiro-auth-token.json` 及其引用的 client-registration 文件，不会删除或覆盖 Kiro 自己的凭据；Kiro 自有凭据刷新后只保存在内存中。
 
 凭据优先级：
 
-1. dsh-kiro 自管 Builder ID 登录
+1. dsh-kiro 自管凭据
 2. Kiro IDE/CLI SSO 缓存
 
 ## 模型发现与推理档位
 
-适配器从 `https://q.<region>.amazonaws.com/ListAvailableModels` 查询当前账号模型，并缓存五分钟。**Settings → Kiro → 发现模型**会强制刷新。模型名、描述、输入上限与输出上限都会映射进 DSH 模型目录。发现接口暂时失败时仍使用配置的后备目录；未列出的模型 id 也会继续透传给 Kiro。
+适配器按认证类型选择 Amazon Q 或 CodeWhisperer 接口查询当前账号模型，并缓存五分钟。**Settings → Kiro → 发现模型**会强制刷新。模型名、描述、输入上限与输出上限都会映射进 DSH 模型目录。发现接口暂时失败时仍使用配置的后备目录；未列出的模型 id 也会继续透传给 Kiro。
 
 支持 thinking 的模型提供四档 effort：
 
@@ -154,7 +171,7 @@ npm run pack:dist
 
 ## 致谢
 
-Kiro 传输基础在 MIT 许可下源自 [caopu16/dsh-llm-kiro](https://github.com/caopu16/dsh-llm-kiro)。登录与 REST 行为参考并核对了 [dat-lequoc/Kiro-Go](https://github.com/dat-lequoc/Kiro-Go)，DSH Web 集成遵循 [LiZhenNet/dsh-antigravity](https://github.com/LiZhenNet/dsh-antigravity) 展示的可安装 bundle 模式。原始版权声明保留在 [LICENSE](LICENSE)。
+Kiro 传输基础在 MIT 许可下源自 [caopu16/dsh-llm-kiro](https://github.com/caopu16/dsh-llm-kiro)。登录、profile ARN、API key 与 external-IdP 行为参考并核对了 [decolua/9router](https://github.com/decolua/9router) 和 [dat-lequoc/Kiro-Go](https://github.com/dat-lequoc/Kiro-Go)。DSH Web 集成遵循 [LiZhenNet/dsh-antigravity](https://github.com/LiZhenNet/dsh-antigravity) 展示的可安装 bundle 模式。原始版权声明保留在 [LICENSE](LICENSE)。
 
 ## 许可
 

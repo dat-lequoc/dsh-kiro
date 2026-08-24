@@ -1,4 +1,4 @@
-/** DSH Web API for Kiro login status and live model discovery. */
+/** DSH Web API for multi-method Kiro login, credential import, and model discovery. */
 import type { Context } from '@deepseek-ai/cordis';
 import '@deepseek-ai/dsh-host-webserver';
 import type { KiroConnectionOptions } from './adapter.ts';
@@ -10,10 +10,6 @@ interface WebDependencies {
     discovery: KiroModelDiscovery;
     resolveToken: (connection: KiroConnectionOptions, signal: AbortSignal) => Promise<KiroToken>;
 }
-/**
- * Register the optional DSH Web management API.
- * @param ctx - owning Cordis context.
- * @param dependencies - credential and discovery services shared with the adapter.
- */
+/** Register the optional DSH Web management API. */
 export declare function registerWebApi(ctx: Context, dependencies: WebDependencies): void;
 export {};

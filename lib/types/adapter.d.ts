@@ -76,6 +76,10 @@ export interface KiroAdapterOptions {
     /** Return the last discovered catalog synchronously for exact-model metadata. */
     currentModels?: (connection: KiroConnectionOptions) => readonly KiroCatalogModel[] | undefined;
 }
+/** Select the auth-specific upstream surface Kiro accepts. */
+export declare function kiroRequestEndpoint(token: KiroToken, region: string): string;
+/** Add the token discriminator required by API-key and external-IdP auth. */
+export declare function kiroTokenTypeHeaders(token: KiroToken): Record<string, string>;
 /**
  * Map a Kiro HTTP status and error body to a stable harness code.
  * @param status - status of a non-2xx response.

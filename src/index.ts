@@ -27,10 +27,11 @@ import {
 } from './adapter.ts'
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import { kiroCredentialDirectory, resolveTokenFromDirectories } from './auth.ts'
-import { KiroModelDiscovery } from './discovery.ts'
+import { discoverKiroProfileArn, KiroModelDiscovery } from './discovery.ts'
 import { credentialDirectory } from './paths.ts'
+import { assertKiroProfileArn } from './profile.ts'
 import { assertKiroRegion } from './region.ts'
-import { parseProxyUrl, postJson } from './transport.ts'
+import { parseProxyUrl, postForm, postJson } from './transport.ts'
 import { registerWebApi } from './web.ts'
 
 export {
@@ -48,18 +49,35 @@ export {
   resolveTokenFromDirectories,
 } from './auth.ts'
 export type { KiroToken, TokenSourceOptions } from './auth.ts'
-export { KiroModelDiscovery, modelSupportsThinking, parseAvailableModels } from './discovery.ts'
+export type { DirectoryTokenSourceOptions, KiroAuthMethod } from './auth.ts'
+export { discoverKiroProfileArn, KiroModelDiscovery, modelSupportsThinking, parseAvailableModels } from './discovery.ts'
+export { assertMicrosoftTokenEndpoint, normalizeExternalIdpCredentials } from './external-idp.ts'
 export {
+  BUILDER_START_URL,
+  completeSocialLogin,
   credentialSummary,
   deleteDeviceCredentials,
+  importApiKey,
+  importExternalIdp,
+  importRefreshToken,
   pollDeviceLogin,
   saveDeviceCredentials,
+  saveManagedCredentials,
   startDeviceLogin,
+  startSocialLogin,
 } from './login.ts'
-export type { DeviceCredentials, DeviceLoginPoll, DeviceLoginSession } from './login.ts'
+export type {
+  DeviceCredentials,
+  DeviceLoginOptions,
+  DeviceLoginPoll,
+  DeviceLoginSession,
+  ManagedCredentials,
+  SocialLoginSession,
+} from './login.ts'
 export { credentialDirectory } from './paths.ts'
+export { assertKiroProfileArn, profileRegion } from './profile.ts'
 export { assertKiroRegion } from './region.ts'
-export { getJson, parseProxyUrl, postJson, postJsonWithHeaders } from './transport.ts'
+export { getJson, parseProxyUrl, postForm, postJson, postJsonWithHeaders } from './transport.ts'
 export type { RequestDefaults } from './serialize.ts'
 export type * from './types.ts'
 
@@ -215,6 +233,7 @@ export function resolveAdapterOptions(config: Config): ResolvedKiroOptions {
   }
   if (config.proxyUrl !== undefined) parseProxyUrl(config.proxyUrl)
   const region = config.region === undefined ? undefined : assertKiroRegion(config.region)
+  const profileArn = config.profileArn === undefined ? undefined : assertKiroProfileArn(config.profileArn)
   if (config.defaultContextWindow !== undefined
     && (!Number.isInteger(config.defaultContextWindow) || config.defaultContextWindow <= 0)) {
     throw new Error('llm-kiro: defaultContextWindow must be a positive integer')
@@ -238,7 +257,7 @@ export function resolveAdapterOptions(config: Config): ResolvedKiroOptions {
   return {
     ...config.proxyUrl === undefined ? {} : { proxyUrl: config.proxyUrl },
     ...region === undefined ? {} : { region },
-    ...config.profileArn === undefined ? {} : { profileArn: config.profileArn },
+    ...profileArn === undefined ? {} : { profileArn },
     defaults: {
       thinking: config.thinking,
       reasoningEffort: config.reasoningEffort,
@@ -284,6 +303,15 @@ export function apply(ctx: Context, config: Config): void {
     ], {
       expiryBufferMs: connection.tokenExpiryBufferMs,
       fetchJson: (url, body) => postJson(url, body, connection.proxyUrl, signal),
+      fetchForm: (url, body) => postForm(url, body, connection.proxyUrl, signal),
+      ...connection.profileArn === undefined
+        ? { resolveProfileArn: (accessToken, region, authMethod) => discoverKiroProfileArn(
+          connection,
+          { accessToken, region, authMethod, expiresAt: Date.now() + 60_000 },
+          signal,
+        ) }
+        : {},
+      writableDirectories: [managedDirectory],
     })
   const discovery = new KiroModelDiscovery({ resolveToken: tokenResolver })
   const adapter = new KiroAdapter({

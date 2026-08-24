@@ -1,30 +1,43 @@
-/** AWS Builder ID device login and DSH-owned credential persistence. */
+/** Multi-method Kiro login and DSH-owned credential persistence. */
 
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { clearTokenCache } from './auth.ts'
+import type { KiroAuthMethod } from './auth.ts'
+import { normalizeExternalIdpCredentials } from './external-idp.ts'
+import { assertKiroProfileArn } from './profile.ts'
 import { assertKiroRegion } from './region.ts'
 
 const TOKEN_FILE = 'kiro-auth-token.json'
-const START_URL = 'https://view.awsapps.com/start'
+export const BUILDER_START_URL = 'https://view.awsapps.com/start'
+const KIRO_ISSUER_URL = 'https://identitycenter.amazonaws.com/ssoins-722374e8c3c8e6c6'
+const KIRO_AUTH_SERVICE = 'https://prod.us-east-1.auth.desktop.kiro.dev'
 const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
 const SCOPES = [
   'codewhisperer:completions',
   'codewhisperer:analysis',
   'codewhisperer:conversations',
-  'codewhisperer:transformations',
-  'codewhisperer:taskassist',
 ]
+const SOCIAL_REDIRECT = 'kiro://kiro.kiroAgent/authenticate-success'
 
-/** JSON transport used by device authorization and polling. */
 export type LoginJsonTransport = (
   url: string,
   body: unknown,
   signal: AbortSignal,
 ) => Promise<{ status: number; body: unknown }>
 
-/** In-memory secret state for one device authorization. */
+export type LoginGetTransport = (
+  url: string,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+) => Promise<{ status: number; body: unknown }>
+
+export interface DeviceLoginOptions {
+  authMethod?: 'builder-id' | 'idc'
+  startUrl?: string
+}
+
 export interface DeviceLoginSession {
   clientId: string
   clientSecret: string
@@ -34,28 +47,45 @@ export interface DeviceLoginSession {
   intervalSeconds: number
   expiresAt: number
   region: string
+  authMethod: 'builder-id' | 'idc'
+  startUrl: string
 }
 
-/** Result of one device-token poll. */
 export type DeviceLoginPoll =
   | { status: 'pending'; intervalSeconds: number }
-  | { status: 'completed'; credentials: DeviceCredentials }
+  | { status: 'completed'; credentials: ManagedCredentials }
 
-/** Complete credential material returned after device authorization. */
-export interface DeviceCredentials {
+export interface ManagedCredentials {
   accessToken: string
-  refreshToken: string
+  refreshToken?: string
   expiresAt: string
-  clientId: string
-  clientSecret: string
   region: string
+  authMethod: KiroAuthMethod
+  profileArn?: string
+  clientId?: string
+  clientSecret?: string
+  startUrl?: string
+  tokenEndpoint?: string
+  scope?: string
 }
 
-/** Non-secret information suitable for a status API. */
+/** Backward-compatible name for device-flow credentials. */
+export type DeviceCredentials = ManagedCredentials
+
 export interface CredentialSummary {
   authenticated: boolean
   expiresAt?: string
   region?: string
+  authMethod?: KiroAuthMethod
+  profileArn?: string
+}
+
+export interface SocialLoginSession {
+  provider: 'google' | 'github'
+  state: string
+  codeVerifier: string
+  authUrl: string
+  expiresAt: number
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -66,7 +96,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function stringField(value: Record<string, unknown>, camel: string, snake?: string): string | undefined {
   const candidate = value[camel] ?? (snake === undefined ? undefined : value[snake])
-  return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined
+  return typeof candidate === 'string' && candidate.trim().length > 0 ? candidate.trim() : undefined
 }
 
 function numberField(value: Record<string, unknown>, camel: string, snake?: string): number | undefined {
@@ -84,26 +114,42 @@ function providerError(body: unknown, fallback: string): string {
     ?? fallback
 }
 
+function startUrl(value: string): string {
+  let parsed: URL
+  try {
+    parsed = new URL(value.trim())
+  } catch (error: unknown) {
+    throw new Error('Kiro IAM Identity Center start URL is invalid', { cause: error })
+  }
+  if (parsed.protocol !== 'https:'
+    || !(parsed.hostname === 'view.awsapps.com' || parsed.hostname.endsWith('.awsapps.com'))
+    || (parsed.pathname !== '/start' && parsed.pathname !== '/start/')) {
+    throw new Error('Kiro IAM Identity Center start URL must be an https://*.awsapps.com/start URL')
+  }
+  return parsed.toString().replace(/\/$/u, '')
+}
+
 /**
- * Begin an AWS Builder ID device authorization.
- * @param region - AWS OIDC region.
- * @param requestJson - JSON transport, normally sharing the configured Kiro proxy.
- * @param signal - caller cancellation.
- * @returns the device session and browser verification URL.
+ * Begin an AWS Builder ID or IAM Identity Center device authorization.
  */
 export async function startDeviceLogin(
   region: string,
   requestJson: LoginJsonTransport,
   signal: AbortSignal,
+  options: DeviceLoginOptions = {},
 ): Promise<DeviceLoginSession> {
   const selectedRegion = assertKiroRegion(region.trim() || 'us-east-1')
+  const authMethod = options.authMethod === 'idc' ? 'idc' : 'builder-id'
+  const selectedStartUrl = startUrl(authMethod === 'idc'
+    ? options.startUrl ?? ''
+    : BUILDER_START_URL)
   const oidcBase = `https://oidc.${selectedRegion}.amazonaws.com`
   const registration = await requestJson(`${oidcBase}/client/register`, {
-    clientName: 'Kiro',
+    clientName: 'kiro-oauth-client',
     clientType: 'public',
     scopes: SCOPES,
     grantTypes: [DEVICE_GRANT, 'refresh_token'],
-    issuerUrl: START_URL,
+    issuerUrl: KIRO_ISSUER_URL,
   }, signal)
   if (registration.status !== 200) {
     throw new Error(`Kiro client registration failed: ${providerError(registration.body, `HTTP ${registration.status}`)}`)
@@ -118,7 +164,7 @@ export async function startDeviceLogin(
   const authorization = await requestJson(`${oidcBase}/device_authorization`, {
     clientId,
     clientSecret,
-    startUrl: START_URL,
+    startUrl: selectedStartUrl,
   }, signal)
   if (authorization.status !== 200) {
     throw new Error(`Kiro device authorization failed: ${providerError(authorization.body, `HTTP ${authorization.status}`)}`)
@@ -135,7 +181,8 @@ export async function startDeviceLogin(
   const verificationUrl = new URL(verificationUri)
   if (verificationUrl.protocol !== 'https:'
     || !(verificationUrl.hostname.endsWith('.amazonaws.com')
-      || verificationUrl.hostname.endsWith('.awsapps.com'))) {
+      || verificationUrl.hostname.endsWith('.awsapps.com')
+      || verificationUrl.hostname.endsWith('.signin.aws'))) {
     throw new Error(`Kiro returned an unsafe verification URL host: ${verificationUrl.hostname}`)
   }
   const intervalSeconds = Math.max(1, numberField(authorized, 'interval') ?? 5)
@@ -149,16 +196,12 @@ export async function startDeviceLogin(
     intervalSeconds,
     expiresAt: Date.now() + expiresIn * 1000,
     region: selectedRegion,
+    authMethod,
+    startUrl: selectedStartUrl,
   }
 }
 
-/**
- * Poll one Builder ID device authorization once.
- * @param session - state returned by {@link startDeviceLogin}.
- * @param requestJson - JSON transport.
- * @param signal - caller cancellation.
- * @returns pending state or complete credentials.
- */
+/** Poll one device authorization once. */
 export async function pollDeviceLogin(
   session: DeviceLoginSession,
   requestJson: LoginJsonTransport,
@@ -174,12 +217,8 @@ export async function pollDeviceLogin(
   const body = record(response.body)
   if (response.status === 400) {
     const code = body === undefined ? undefined : stringField(body, 'error')
-    if (code === 'authorization_pending') {
-      return { status: 'pending', intervalSeconds: session.intervalSeconds }
-    }
-    if (code === 'slow_down') {
-      return { status: 'pending', intervalSeconds: session.intervalSeconds + 5 }
-    }
+    if (code === 'authorization_pending') return { status: 'pending', intervalSeconds: session.intervalSeconds }
+    if (code === 'slow_down') return { status: 'pending', intervalSeconds: session.intervalSeconds + 5 }
     if (code === 'access_denied') throw new Error('Kiro device authorization was denied')
     if (code === 'expired_token') throw new Error('Kiro device authorization expired; start login again')
   }
@@ -192,6 +231,7 @@ export async function pollDeviceLogin(
     throw new Error('Kiro token response returned incomplete credentials')
   }
   const expiresIn = Math.max(1, numberField(body, 'expiresIn', 'expires_in') ?? 3600)
+  const profileArn = stringField(body, 'profileArn', 'profile_arn')
   return {
     status: 'completed',
     credentials: {
@@ -201,8 +241,166 @@ export async function pollDeviceLogin(
       clientId: session.clientId,
       clientSecret: session.clientSecret,
       region: session.region,
+      authMethod: session.authMethod,
+      startUrl: session.startUrl,
+      ...profileArn === undefined ? {} : { profileArn: assertKiroProfileArn(profileArn) },
     },
   }
+}
+
+/** Start Kiro desktop social OAuth with PKCE and a manual kiro:// callback. */
+export function startSocialLogin(provider: 'google' | 'github'): SocialLoginSession {
+  const codeVerifier = randomBytes(32).toString('base64url')
+  const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url')
+  const state = randomBytes(24).toString('base64url')
+  const idp = provider === 'google' ? 'Google' : 'Github'
+  const url = new URL(`${KIRO_AUTH_SERVICE}/login`)
+  url.searchParams.set('idp', idp)
+  url.searchParams.set('redirect_uri', SOCIAL_REDIRECT)
+  url.searchParams.set('code_challenge', codeChallenge)
+  url.searchParams.set('code_challenge_method', 'S256')
+  url.searchParams.set('state', state)
+  url.searchParams.set('prompt', 'select_account')
+  return { provider, state, codeVerifier, authUrl: url.toString(), expiresAt: Date.now() + 600_000 }
+}
+
+/** Complete Google/GitHub auth from the callback URL Kiro redirected to. */
+export async function completeSocialLogin(
+  callbackUrl: string,
+  session: SocialLoginSession,
+  requestJson: LoginJsonTransport,
+  signal: AbortSignal,
+): Promise<ManagedCredentials> {
+  if (Date.now() >= session.expiresAt) throw new Error('Kiro social login expired; start again')
+  let callback: URL
+  try {
+    callback = new URL(callbackUrl.trim())
+  } catch (error: unknown) {
+    throw new Error('Kiro social callback URL is invalid', { cause: error })
+  }
+  if (callback.protocol !== 'kiro:' || callback.hostname.toLowerCase() !== 'kiro.kiroagent'
+    || callback.pathname !== '/authenticate-success') {
+    throw new Error('Kiro social callback URL has an unexpected destination')
+  }
+  if (callback.searchParams.get('state') !== session.state) throw new Error('Kiro social callback state does not match')
+  const callbackError = callback.searchParams.get('error_description') ?? callback.searchParams.get('error')
+  if (callbackError !== null) throw new Error(`Kiro social login failed: ${callbackError}`)
+  const code = callback.searchParams.get('code')
+  if (code === null || code.length === 0) throw new Error('Kiro social callback contains no authorization code')
+  const response = await requestJson(`${KIRO_AUTH_SERVICE}/oauth/token`, {
+    code,
+    code_verifier: session.codeVerifier,
+    redirect_uri: SOCIAL_REDIRECT,
+  }, signal)
+  if (response.status !== 200) {
+    throw new Error(`Kiro social token exchange failed: ${providerError(response.body, `HTTP ${response.status}`)}`)
+  }
+  const body = record(response.body)
+  const accessToken = body === undefined ? undefined : stringField(body, 'accessToken', 'access_token')
+  const refreshToken = body === undefined ? undefined : stringField(body, 'refreshToken', 'refresh_token')
+  if (accessToken === undefined || refreshToken === undefined) throw new Error('Kiro social token exchange returned incomplete credentials')
+  const expiresIn = Math.max(1, body === undefined ? 3600 : numberField(body, 'expiresIn', 'expires_in') ?? 3600)
+  const profileArn = body === undefined ? undefined : stringField(body, 'profileArn', 'profile_arn')
+  return {
+    accessToken,
+    refreshToken,
+    expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+    region: 'us-east-1',
+    authMethod: session.provider,
+    ...profileArn === undefined ? {} : { profileArn: assertKiroProfileArn(profileArn) },
+  }
+}
+
+/** Validate and refresh an imported Kiro refresh token. */
+export async function importRefreshToken(
+  input: {
+    refreshToken: string
+    region?: string
+    profileArn?: string
+    clientId?: string
+    clientSecret?: string
+    startUrl?: string
+  },
+  requestJson: LoginJsonTransport,
+  signal: AbortSignal,
+): Promise<ManagedCredentials> {
+  const refreshToken = input.refreshToken.trim()
+  if (refreshToken.length === 0) throw new Error('Kiro refresh token is required')
+  if ((input.clientId === undefined) !== (input.clientSecret === undefined)) {
+    throw new Error('Kiro client id and client secret must be provided together')
+  }
+  const region = assertKiroRegion(input.region?.trim() || 'us-east-1')
+  const isIdc = input.clientId !== undefined && input.clientSecret !== undefined
+  const response = await requestJson(
+    isIdc ? `https://oidc.${region}.amazonaws.com/token` : `${KIRO_AUTH_SERVICE}/refreshToken`,
+    isIdc
+      ? {
+        clientId: input.clientId,
+        clientSecret: input.clientSecret,
+        refreshToken,
+        grantType: 'refresh_token',
+      }
+      : { refreshToken },
+    signal,
+  )
+  if (response.status !== 200) {
+    throw new Error(`Kiro refresh-token import failed: ${providerError(response.body, `HTTP ${response.status}`)}`)
+  }
+  const body = record(response.body)
+  const accessToken = body === undefined ? undefined : stringField(body, 'accessToken', 'access_token')
+  if (accessToken === undefined) throw new Error('Kiro refresh-token import returned no access token')
+  const rotated = body === undefined ? undefined : stringField(body, 'refreshToken', 'refresh_token')
+  const expiresIn = Math.max(1, body === undefined ? 3600 : numberField(body, 'expiresIn', 'expires_in') ?? 3600)
+  const responseProfile = body === undefined ? undefined : stringField(body, 'profileArn', 'profile_arn')
+  const selectedProfile = input.profileArn?.trim() || responseProfile
+  return {
+    accessToken,
+    refreshToken: rotated ?? refreshToken,
+    expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+    region,
+    authMethod: isIdc ? 'idc' : 'imported',
+    ...isIdc ? {
+      clientId: input.clientId,
+      clientSecret: input.clientSecret,
+      ...input.startUrl === undefined ? {} : { startUrl: startUrl(input.startUrl) },
+    } : {},
+    ...selectedProfile === undefined ? {} : { profileArn: assertKiroProfileArn(selectedProfile) },
+  }
+}
+
+/** Validate a long-lived Kiro API key against its actual model catalog. */
+export async function importApiKey(
+  apiKey: string,
+  regionValue: string | undefined,
+  requestGet: LoginGetTransport,
+  signal: AbortSignal,
+): Promise<ManagedCredentials> {
+  const accessToken = apiKey.trim()
+  if (accessToken.length === 0) throw new Error('Kiro API key is required')
+  const region = assertKiroRegion(regionValue?.trim() || 'us-east-1')
+  const url = new URL(`https://q.${region}.amazonaws.com/ListAvailableModels`)
+  url.searchParams.set('origin', 'AI_EDITOR')
+  const response = await requestGet(url.toString(), {
+    authorization: `Bearer ${accessToken}`,
+    TokenType: 'API_KEY',
+    'user-agent': 'aws-sdk-js/3.738.0 KiroIDE',
+    'x-amz-user-agent': 'aws-sdk-js/3.738.0 KiroIDE',
+  }, signal)
+  const models = record(response.body)?.models
+  if (response.status !== 200 || !Array.isArray(models) || models.length === 0) {
+    throw new Error('Kiro API key validation failed')
+  }
+  return {
+    accessToken,
+    expiresAt: new Date(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000).toISOString(),
+    region,
+    authMethod: 'api_key',
+  }
+}
+
+/** Convert CLIProxyAPI-compatible Microsoft external-IdP JSON into managed credentials. */
+export function importExternalIdp(raw: unknown): ManagedCredentials {
+  return normalizeExternalIdpCredentials(raw)
 }
 
 async function atomicJson(path: string, value: unknown): Promise<void> {
@@ -211,40 +409,45 @@ async function atomicJson(path: string, value: unknown): Promise<void> {
   await rename(temporary, path)
 }
 
-/**
- * Save a completed device authorization beneath DSH home.
- * @param directory - managed credential directory.
- * @param credentials - complete device credentials.
- */
-export async function saveDeviceCredentials(directory: string, credentials: DeviceCredentials): Promise<void> {
+/** Save any normalized credential beneath DSH home with private permissions. */
+export async function saveManagedCredentials(directory: string, credentials: ManagedCredentials): Promise<void> {
   await mkdir(directory, { recursive: true, mode: 0o700 })
-  const clientIdHash = createHash('sha256').update(credentials.clientId).digest('hex')
-  await atomicJson(join(directory, `${clientIdHash}.json`), {
-    clientId: credentials.clientId,
-    clientSecret: credentials.clientSecret,
-  })
+  let clientIdHash: string | undefined
+  if (credentials.clientId !== undefined && credentials.clientSecret !== undefined) {
+    clientIdHash = createHash('sha256').update(credentials.clientId).digest('hex')
+    await atomicJson(join(directory, `${clientIdHash}.json`), {
+      clientId: credentials.clientId,
+      clientSecret: credentials.clientSecret,
+    })
+  }
   await atomicJson(join(directory, TOKEN_FILE), {
     accessToken: credentials.accessToken,
-    refreshToken: credentials.refreshToken,
+    ...credentials.refreshToken === undefined ? {} : { refreshToken: credentials.refreshToken },
     expiresAt: credentials.expiresAt,
-    clientIdHash,
     region: credentials.region,
-    startUrl: START_URL,
+    authMethod: credentials.authMethod,
+    ...credentials.profileArn === undefined ? {} : { profileArn: assertKiroProfileArn(credentials.profileArn) },
+    ...clientIdHash === undefined ? {} : { clientIdHash },
+    ...credentials.clientId === undefined || credentials.clientSecret !== undefined
+      ? {}
+      : { clientId: credentials.clientId },
+    ...credentials.startUrl === undefined ? {} : { startUrl: credentials.startUrl },
+    ...credentials.tokenEndpoint === undefined ? {} : { tokenEndpoint: credentials.tokenEndpoint },
+    ...credentials.scope === undefined ? {} : { scope: credentials.scope },
   })
   clearTokenCache()
 }
 
-/**
- * Read non-secret managed credential status.
- * @param directory - credential directory to inspect.
- * @returns authentication metadata, or an unauthenticated summary when absent.
- */
+export function saveDeviceCredentials(directory: string, credentials: DeviceCredentials): Promise<void> {
+  return saveManagedCredentials(directory, credentials)
+}
+
+/** Read only non-secret managed credential metadata for the status API. */
 export async function credentialSummary(directory: string): Promise<CredentialSummary> {
   let parsed: unknown
   try {
     parsed = JSON.parse(await readFile(join(directory, TOKEN_FILE), 'utf8'))
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { authenticated: false }
+  } catch {
     return { authenticated: false }
   }
   const value = record(parsed)
@@ -253,10 +456,14 @@ export async function credentialSummary(directory: string): Promise<CredentialSu
   const refreshToken = stringField(value, 'refreshToken', 'refresh_token')
   const expiresAt = stringField(value, 'expiresAt', 'expires_at')
   const region = stringField(value, 'region')
+  const method = stringField(value, 'authMethod', 'auth_method') as KiroAuthMethod | undefined
+  const profileArn = stringField(value, 'profileArn', 'profile_arn')
   return {
     authenticated: accessToken !== undefined || refreshToken !== undefined,
     ...expiresAt === undefined ? {} : { expiresAt },
     ...region === undefined ? {} : { region },
+    ...method === undefined ? {} : { authMethod: method },
+    ...profileArn === undefined ? {} : { profileArn },
   }
 }
 
@@ -268,10 +475,7 @@ async function unlinkIfPresent(path: string): Promise<void> {
   }
 }
 
-/**
- * Delete only credentials owned by this plugin, leaving Kiro IDE files intact.
- * @param directory - managed credential directory.
- */
+/** Delete only credentials owned by this plugin, leaving Kiro IDE files intact. */
 export async function deleteDeviceCredentials(directory: string): Promise<void> {
   let clientIdHash: string | undefined
   try {

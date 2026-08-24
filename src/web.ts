@@ -1,20 +1,27 @@
-/** DSH Web API for Kiro login status and live model discovery. */
+/** DSH Web API for multi-method Kiro login, credential import, and model discovery. */
 
 import type { Context } from '@deepseek-ai/cordis'
 import '@deepseek-ai/dsh-host-webserver'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import { kiroCredentialDirectory } from './auth.ts'
 import type { KiroToken } from './auth.ts'
+import { discoverKiroProfileArn } from './discovery.ts'
 import type { KiroModelDiscovery } from './discovery.ts'
 import {
+  completeSocialLogin,
   credentialSummary,
   deleteDeviceCredentials,
+  importApiKey,
+  importExternalIdp,
+  importRefreshToken,
   pollDeviceLogin,
-  saveDeviceCredentials,
+  saveManagedCredentials,
   startDeviceLogin,
+  startSocialLogin,
 } from './login.ts'
-import type { DeviceLoginSession } from './login.ts'
-import { postJson } from './transport.ts'
+import type { DeviceLoginSession, ManagedCredentials, SocialLoginSession } from './login.ts'
+import { getJson, postJson } from './transport.ts'
 
 interface WebDependencies {
   managedDirectory: string
@@ -25,7 +32,10 @@ interface WebDependencies {
 
 interface LoginFlow {
   status: 'pending' | 'complete' | 'error'
-  session?: DeviceLoginSession
+  kind: 'device' | 'social'
+  method: string
+  deviceSession?: DeviceLoginSession
+  socialSession?: SocialLoginSession
   authUrl?: string
   userCode?: string
   startedAt: number
@@ -33,7 +43,7 @@ interface LoginFlow {
   error?: string
 }
 
-function sendJson(response: import('node:http').ServerResponse, status: number, body: unknown): void {
+function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -46,17 +56,53 @@ function safeError(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error)
   return text
     .replace(/Bearer\s+\S+/giu, 'Bearer [redacted]')
-    .replace(/(?:access|refresh|client)[_-]?(?:token|secret)\s*[:=]\s*\S+/giu, '[redacted credential]')
+    .replace(/(?:access|refresh|client|api)[_-]?(?:token|secret|key)\s*[:=]\s*\S+/giu, '[redacted credential]')
+    .replace(/aorAAAAAG[A-Za-z0-9._~-]+/gu, '[redacted refresh token]')
+}
+
+async function readJson(request: IncomingMessage, maximumBytes = 1_048_576): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = []
+  let bytes = 0
+  for await (const raw of request) {
+    const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as Uint8Array)
+    bytes += chunk.byteLength
+    if (bytes > maximumBytes) throw new Error('Kiro request body is too large')
+    chunks.push(chunk)
+  }
+  if (bytes === 0) return {}
+  let value: unknown
+  try {
+    value = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+  } catch (error: unknown) {
+    throw new Error('Kiro request body is not valid JSON', { cause: error })
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Kiro request body must be a JSON object')
+  }
+  return value as Record<string, unknown>
+}
+
+function optionalText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
+}
+
+function requiredText(value: unknown, name: string): string {
+  const result = optionalText(value)
+  if (result === undefined) throw new Error(`${name} is required`)
+  return result
 }
 
 function publicLogin(flow: LoginFlow | undefined): Record<string, unknown> {
   if (flow === undefined) return { status: 'idle' }
   return {
     status: flow.status,
+    kind: flow.kind,
+    method: flow.method,
     startedAt: flow.startedAt,
     ...flow.completedAt === undefined ? {} : { completedAt: flow.completedAt },
     ...flow.authUrl === undefined ? {} : { authUrl: flow.authUrl },
     ...flow.userCode === undefined ? {} : { userCode: flow.userCode },
+    ...flow.kind === 'social' && flow.status === 'pending' ? { needsCallback: true } : {},
     ...flow.error === undefined ? {} : { error: flow.error },
   }
 }
@@ -77,11 +123,7 @@ function modelPayload(models: readonly KiroCatalogModel[], source: 'live' | 'con
   }
 }
 
-/**
- * Register the optional DSH Web management API.
- * @param ctx - owning Cordis context.
- * @param dependencies - credential and discovery services shared with the adapter.
- */
+/** Register the optional DSH Web management API. */
 export function registerWebApi(ctx: Context, dependencies: WebDependencies): void {
   let login: LoginFlow | undefined
   let loginController: AbortController | undefined
@@ -97,38 +139,85 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
   const status = async (): Promise<unknown> => {
     const managed = await credentialSummary(dependencies.managedDirectory)
     const external = managed.authenticated
-      ? { authenticated: false }
+      ? { authenticated: false as const, authMethod: undefined, region: undefined, expiresAt: undefined, profileArn: undefined }
       : await credentialSummary(kiroCredentialDirectory())
     const connection = dependencies.options()
     const cached = dependencies.discovery.current(connection)
     return {
       authenticated: managed.authenticated || external.authenticated,
       credentialSource: managed.authenticated ? 'dsh' : external.authenticated ? 'kiro' : 'none',
+      authMethod: managed.authMethod ?? external.authMethod,
       region: managed.region ?? external.region ?? connection.region,
       expiresAt: managed.expiresAt ?? external.expiresAt,
+      profileArn: connection.profileArn ?? managed.profileArn ?? external.profileArn,
       login: publicLogin(login),
       models: modelPayload(cached ?? connection.models, cached === undefined ? 'configured' : 'live'),
     }
   }
 
-  const beginLogin = async (): Promise<unknown> => {
-    if (login?.status === 'pending') return publicLogin(login)
+  const save = async (credentials: ManagedCredentials, signal: AbortSignal): Promise<void> => {
+    let complete = credentials
+    if (credentials.profileArn === undefined && credentials.authMethod !== 'api_key') {
+      try {
+        const profileArn = await discoverKiroProfileArn(
+          dependencies.options(),
+          {
+            accessToken: credentials.accessToken,
+            region: credentials.region,
+            expiresAt: Date.parse(credentials.expiresAt),
+            authMethod: credentials.authMethod,
+          },
+          signal,
+        )
+        if (profileArn !== undefined) complete = { ...credentials, profileArn }
+      } catch (error: unknown) {
+        ctx.logger.warn(`dsh-kiro: profile ARN discovery after login failed: ${safeError(error)}`)
+      }
+    }
+    await saveManagedCredentials(dependencies.managedDirectory, complete)
+    dependencies.discovery.clear()
+    emitUpdated()
+  }
+
+  const finish = async (credentials: ManagedCredentials, flow: LoginFlow, signal: AbortSignal): Promise<void> => {
+    await save(credentials, signal)
+    login = {
+      status: 'complete',
+      kind: flow.kind,
+      method: flow.method,
+      ...flow.authUrl === undefined ? {} : { authUrl: flow.authUrl },
+      ...flow.userCode === undefined ? {} : { userCode: flow.userCode },
+      startedAt: flow.startedAt,
+      completedAt: Date.now(),
+    }
+  }
+
+  const beginDevice = async (body: Record<string, unknown>): Promise<unknown> => {
     loginController?.abort('starting a new Kiro login')
     const controller = new AbortController()
     loginController = controller
+    if (body.method !== 'builder-id' && body.method !== 'idc') {
+      throw new Error('Unsupported Kiro device login method')
+    }
+    const method = body.method
     const connection = dependencies.options()
-    const region = connection.region ?? 'us-east-1'
-    const requestJson = (url: string, body: unknown, signal: AbortSignal) =>
-      postJson(url, body, connection.proxyUrl, signal)
-    const session = await startDeviceLogin(region, requestJson, controller.signal)
-    login = {
+    const region = optionalText(body.region) ?? connection.region ?? 'us-east-1'
+    const requestJson = (url: string, value: unknown, signal: AbortSignal) =>
+      postJson(url, value, connection.proxyUrl, signal)
+    const session = await startDeviceLogin(region, requestJson, controller.signal, {
+      authMethod: method,
+      ...method === 'idc' ? { startUrl: requiredText(body.startUrl, 'IAM Identity Center start URL') } : {},
+    })
+    const flow: LoginFlow = {
       status: 'pending',
-      session,
+      kind: 'device',
+      method,
+      deviceSession: session,
       authUrl: session.verificationUri,
       userCode: session.userCode,
       startedAt: Date.now(),
     }
-
+    login = flow
     void (async () => {
       let intervalSeconds = session.intervalSeconds
       try {
@@ -149,31 +238,96 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
             intervalSeconds = result.intervalSeconds
             continue
           }
-          await saveDeviceCredentials(dependencies.managedDirectory, result.credentials)
-          dependencies.discovery.clear()
-          login = {
-            status: 'complete',
-            authUrl: session.verificationUri,
-            userCode: session.userCode,
-            startedAt: login?.startedAt ?? Date.now(),
-            completedAt: Date.now(),
-          }
-          emitUpdated()
+          await finish(result.credentials, flow, controller.signal)
           return
         }
       } catch (error: unknown) {
         if (controller.signal.aborted) return
         login = {
+          ...flow,
           status: 'error',
-          authUrl: session.verificationUri,
-          userCode: session.userCode,
-          startedAt: login?.startedAt ?? Date.now(),
           completedAt: Date.now(),
           error: safeError(error),
         }
       }
     })()
     return publicLogin(login)
+  }
+
+  const beginSocial = (method: 'google' | 'github'): unknown => {
+    loginController?.abort('starting a new Kiro social login')
+    loginController = new AbortController()
+    const session = startSocialLogin(method)
+    login = {
+      status: 'pending',
+      kind: 'social',
+      method,
+      socialSession: session,
+      authUrl: session.authUrl,
+      startedAt: Date.now(),
+    }
+    return publicLogin(login)
+  }
+
+  const completeSocial = async (body: Record<string, unknown>): Promise<unknown> => {
+    const flow = login
+    const session = flow?.socialSession
+    const controller = loginController
+    if (flow?.kind !== 'social' || flow.status !== 'pending' || session === undefined || controller === undefined) {
+      throw new Error('No Kiro social login is waiting for a callback')
+    }
+    const connection = dependencies.options()
+    const credentials = await completeSocialLogin(
+      requiredText(body.callbackUrl, 'Kiro callback URL'),
+      session,
+      (url, value, signal) => postJson(url, value, connection.proxyUrl, signal),
+      controller.signal,
+    )
+    await finish(credentials, flow, controller.signal)
+    return publicLogin(login)
+  }
+
+  const importCredential = async (body: Record<string, unknown>): Promise<unknown> => {
+    loginController?.abort('importing Kiro credentials')
+    loginController = undefined
+    const connection = dependencies.options()
+    const signal = AbortSignal.timeout(30_000)
+    const method = requiredText(body.method, 'Kiro import method')
+    let credentials: ManagedCredentials
+    if (method === 'refresh-token') {
+      const region = optionalText(body.region) ?? connection.region
+      const profileArn = optionalText(body.profileArn)
+      const clientId = optionalText(body.clientId)
+      const clientSecret = optionalText(body.clientSecret)
+      const startUrl = optionalText(body.startUrl)
+      const refreshInput = {
+        refreshToken: requiredText(body.refreshToken, 'Kiro refresh token'),
+        ...region === undefined ? {} : { region },
+        ...profileArn === undefined ? {} : { profileArn },
+        ...clientId === undefined ? {} : { clientId },
+        ...clientSecret === undefined ? {} : { clientSecret },
+        ...startUrl === undefined ? {} : { startUrl },
+      }
+      credentials = await importRefreshToken(
+        refreshInput,
+        (url, value, requestSignal) => postJson(url, value, connection.proxyUrl, requestSignal),
+        signal,
+      )
+    } else if (method === 'api-key') {
+      credentials = await importApiKey(
+        requiredText(body.apiKey, 'Kiro API key'),
+        optionalText(body.region) ?? connection.region,
+        (url, headers, requestSignal) => getJson(url, headers, connection.proxyUrl, requestSignal),
+        signal,
+      )
+    } else if (method === 'external-idp') {
+      credentials = importExternalIdp(body.credentials)
+    } else {
+      throw new Error('Unsupported Kiro import method')
+    }
+    await save(credentials, signal)
+    login = undefined
+    return status()
   }
 
   ctx.inject(['webServer'], (webCtx) => {
@@ -190,7 +344,20 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               return
             }
             if (path === 'login' && request.method === 'POST') {
-              sendJson(response, 200, { ok: true, value: await beginLogin() })
+              const body = await readJson(request)
+              const method = optionalText(body.method) ?? 'builder-id'
+              const value = method === 'google' || method === 'github'
+                ? beginSocial(method)
+                : await beginDevice({ ...body, method })
+              sendJson(response, 200, { ok: true, value })
+              return
+            }
+            if (path === 'login/social/complete' && request.method === 'POST') {
+              sendJson(response, 200, { ok: true, value: await completeSocial(await readJson(request)) })
+              return
+            }
+            if (path === 'credentials/import' && request.method === 'POST') {
+              sendJson(response, 200, { ok: true, value: await importCredential(await readJson(request)) })
               return
             }
             if (path === 'logout' && request.method === 'POST') {
@@ -213,11 +380,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
             }
             if (path === 'models/refresh' && request.method === 'POST') {
               const connection = dependencies.options()
-              const models = await dependencies.discovery.list(
-                connection,
-                AbortSignal.timeout(15_000),
-                true,
-              )
+              const models = await dependencies.discovery.list(connection, AbortSignal.timeout(15_000), true)
               emitUpdated()
               sendJson(response, 200, { ok: true, value: modelPayload(models, 'live') })
               return

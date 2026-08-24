@@ -2,7 +2,8 @@
 
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
-import type { KiroToken } from './auth.ts'
+import type { KiroAuthMethod, KiroToken } from './auth.ts'
+import { assertKiroProfileArn } from './profile.ts'
 import { getJson, postJsonWithHeaders } from './transport.ts'
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000
@@ -47,6 +48,75 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function positiveInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined
+}
+
+function tokenTypeHeaders(authMethod: KiroAuthMethod): Record<string, string> {
+  if (authMethod === 'api_key') return { TokenType: 'API_KEY' }
+  if (authMethod === 'external_idp') return { TokenType: 'EXTERNAL_IDP' }
+  return {}
+}
+
+function authHeaders(token: KiroToken): Record<string, string> {
+  return {
+    authorization: `Bearer ${token.accessToken}`,
+    'user-agent': KIRO_USER_AGENT,
+    'x-amz-user-agent': KIRO_USER_AGENT,
+    'x-amzn-codewhisperer-optout': 'true',
+    ...tokenTypeHeaders(token.authMethod),
+  }
+}
+
+/** Resolve the best CodeWhisperer profile ARN for one OAuth credential. */
+export async function discoverKiroProfileArn(
+  connection: Pick<KiroConnectionOptions, 'region' | 'proxyUrl'>,
+  token: KiroToken,
+  signal: AbortSignal,
+  request: ProfileDiscoveryRequest = postJsonWithHeaders,
+): Promise<string | undefined> {
+  if (token.authMethod === 'api_key') return undefined
+  const candidates = [...new Set([connection.region, token.region, 'us-east-1', 'eu-central-1']
+    .filter((candidate): candidate is string => candidate !== undefined))]
+  for (const candidate of candidates) {
+    const endpoint = `https://codewhisperer.${candidate}.amazonaws.com`
+    const attempts = [
+      { url: `${endpoint}/ListAvailableProfiles`, headers: authHeaders(token) },
+      {
+        url: endpoint,
+        headers: {
+          ...authHeaders(token),
+          'content-type': 'application/x-amz-json-1.0',
+          'x-amz-target': 'AmazonCodeWhispererService.ListAvailableProfiles',
+        },
+      },
+    ]
+    for (const attempt of attempts) {
+      const response = await request(
+        attempt.url,
+        { maxResults: 50 },
+        attempt.headers,
+        connection.proxyUrl,
+        signal,
+      )
+      if (response.status !== 200) continue
+      const profiles = record(response.body)?.profiles
+      if (!Array.isArray(profiles)) continue
+      const valid: string[] = []
+      for (const raw of profiles) {
+        const value = record(raw)
+        const candidateArn = value?.arn ?? value?.profileArn
+        if (typeof candidateArn !== 'string') continue
+        try {
+          valid.push(assertKiroProfileArn(candidateArn))
+        } catch {
+          // Ignore malformed upstream entries instead of allowing them into a URL.
+        }
+      }
+      const regional = valid.find(arn => arn.split(':')[3] === token.region)
+      if (regional !== undefined) return regional
+      if (valid[0] !== undefined) return valid[0]
+    }
+  }
+  return undefined
 }
 
 /** Infer whether a discovered route should expose Kiro's thinking controls. */
@@ -130,12 +200,7 @@ export class KiroModelDiscovery {
   }
 
   private headers(token: KiroToken): Record<string, string> {
-    return {
-      authorization: `Bearer ${token.accessToken}`,
-      'user-agent': KIRO_USER_AGENT,
-      'x-amz-user-agent': KIRO_USER_AGENT,
-      'x-amzn-codewhisperer-optout': 'true',
-    }
+    return authHeaders(token)
   }
 
   private async discoverProfile(
@@ -144,27 +209,7 @@ export class KiroModelDiscovery {
     region: string,
     signal: AbortSignal,
   ): Promise<string | undefined> {
-    const candidates = [...new Set([region, 'us-east-1', 'eu-central-1'])]
-    for (const candidate of candidates) {
-      const response = await this.profileRequestJson(
-        `${this.endpoint(candidate)}/ListAvailableProfiles`,
-        { maxResults: 50 },
-        this.headers(token),
-        connection.proxyUrl,
-        signal,
-      )
-      if (response.status !== 200) continue
-      const profiles = record(response.body)?.profiles
-      if (!Array.isArray(profiles)) continue
-      for (const raw of profiles) {
-        const arn = record(raw)?.arn
-        if (typeof arn === 'string'
-          && /^arn:aws:codewhisperer:[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+:[0-9]{12}:profile\/[A-Za-z0-9+=,.@_-]+$/u.test(arn.trim())) {
-          return arn.trim()
-        }
-      }
-    }
-    return undefined
+    return discoverKiroProfileArn({ ...connection, region }, token, signal, this.profileRequestJson)
   }
 
   /**
@@ -200,6 +245,7 @@ export class KiroModelDiscovery {
     if (!force && cached !== undefined && cached.expiresAt > Date.now()) return cached.models
 
     const profileArn = connection.profileArn
+      ?? token.profileArn
       ?? await this.discoverProfile(connection, token, authRegion, signal)
     const profileRegion = profileArn?.split(':')[3]
     const region = profileRegion !== undefined

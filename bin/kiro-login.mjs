@@ -1,13 +1,23 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
+import { createInterface } from 'node:readline/promises'
 import {
+  completeSocialLogin,
   credentialDirectory,
   deleteDeviceCredentials,
+  discoverKiroProfileArn,
+  getJson,
+  importApiKey,
+  importExternalIdp,
+  importRefreshToken,
   pollDeviceLogin,
   postJson,
-  saveDeviceCredentials,
+  postJsonWithHeaders,
+  saveManagedCredentials,
   startDeviceLogin,
+  startSocialLogin,
 } from '../lib/index.js'
 
 function option(name) {
@@ -50,6 +60,25 @@ for (const name of ['SIGINT', 'SIGTERM']) {
 
 try {
   const directory = credentialDirectory()
+  if (process.argv.includes('--help')) {
+    console.log(`Usage: kiro-login [options]
+
+Methods:
+  --method builder-id             AWS Builder ID device login (default)
+  --method idc --start-url URL    IAM Identity Center device login
+  --method google|github          Social login with manual kiro:// callback
+  --method refresh-token          Import KIRO_REFRESH_TOKEN or --refresh-token
+  --method api-key                Import KIRO_API_KEY or --api-key
+  --method external-idp           Import CLIProxyAPI JSON from --credentials-file
+
+Common options:
+  --region REGION                 AWS region (default: us-east-1)
+  --profile-arn ARN               Optional CodeWhisperer profile ARN
+  --proxy URL                     HTTP/HTTPS proxy
+  --no-open                       Do not open a browser automatically
+  --logout                        Remove dsh-kiro-managed credentials`)
+    process.exit(0)
+  }
   if (process.argv.includes('--logout')) {
     await deleteDeviceCredentials(directory)
     console.log(`Removed dsh-kiro managed credentials from ${directory}`)
@@ -58,24 +87,91 @@ try {
 
   const region = option('--region') ?? process.env.KIRO_REGION ?? 'us-east-1'
   const proxyUrl = option('--proxy') ?? process.env.KIRO_PROXY_URL
+  const method = option('--method') ?? 'builder-id'
   const requestJson = (url, body, signal) => postJson(url, body, proxyUrl, signal)
-  const session = await startDeviceLogin(region, requestJson, controller.signal)
-  console.log(`Open ${session.verificationUri}`)
-  console.log(`Builder ID code: ${session.userCode}`)
-  if (!process.argv.includes('--no-open')) openBrowser(session.verificationUri)
+  let credentials
 
-  let intervalSeconds = session.intervalSeconds
-  while (true) {
-    await delay(intervalSeconds * 1000, controller.signal)
-    const result = await pollDeviceLogin(session, requestJson, controller.signal)
-    if (result.status === 'pending') {
-      intervalSeconds = result.intervalSeconds
-      continue
+  if (method === 'builder-id' || method === 'idc') {
+    const session = await startDeviceLogin(region, requestJson, controller.signal, {
+      authMethod: method,
+      ...(method === 'idc' ? { startUrl: option('--start-url') ?? process.env.KIRO_START_URL ?? '' } : {}),
+    })
+    console.log(`Open ${session.verificationUri}`)
+    console.log(`Device code: ${session.userCode}`)
+    if (!process.argv.includes('--no-open')) openBrowser(session.verificationUri)
+
+    let intervalSeconds = session.intervalSeconds
+    while (true) {
+      await delay(intervalSeconds * 1000, controller.signal)
+      const result = await pollDeviceLogin(session, requestJson, controller.signal)
+      if (result.status === 'pending') {
+        intervalSeconds = result.intervalSeconds
+        continue
+      }
+      credentials = result.credentials
+      break
     }
-    await saveDeviceCredentials(directory, result.credentials)
-    console.log(`Kiro login complete. Credentials saved to ${directory}`)
-    break
+  } else if (method === 'google' || method === 'github') {
+    const session = startSocialLogin(method)
+    console.log(`Open ${session.authUrl}`)
+    if (!process.argv.includes('--no-open')) openBrowser(session.authUrl)
+    let callbackUrl = option('--callback-url')
+    if (callbackUrl === undefined) {
+      const input = createInterface({ input: process.stdin, output: process.stdout })
+      try {
+        callbackUrl = await input.question('Paste the full kiro:// callback URL: ')
+      } finally {
+        input.close()
+      }
+    }
+    credentials = await completeSocialLogin(callbackUrl, session, requestJson, controller.signal)
+  } else if (method === 'refresh-token') {
+    credentials = await importRefreshToken({
+      refreshToken: option('--refresh-token') ?? process.env.KIRO_REFRESH_TOKEN ?? '',
+      region,
+      ...option('--profile-arn') === undefined ? {} : { profileArn: option('--profile-arn') },
+      ...option('--client-id') === undefined ? {} : { clientId: option('--client-id') },
+      ...option('--client-secret') === undefined ? {} : { clientSecret: option('--client-secret') },
+      ...option('--start-url') === undefined ? {} : { startUrl: option('--start-url') },
+    }, requestJson, controller.signal)
+  } else if (method === 'api-key') {
+    credentials = await importApiKey(
+      option('--api-key') ?? process.env.KIRO_API_KEY ?? '',
+      region,
+      (url, headers, signal) => getJson(url, headers, proxyUrl, signal),
+      controller.signal,
+    )
+  } else if (method === 'external-idp') {
+    const path = option('--credentials-file')
+    if (path === undefined) throw new Error('--credentials-file is required for external-idp login')
+    credentials = importExternalIdp(await readFile(path, 'utf8'))
+  } else {
+    throw new Error(`unsupported login method: ${method}`)
   }
+
+  const selectedProfileArn = option('--profile-arn')
+  if (selectedProfileArn !== undefined) credentials = { ...credentials, profileArn: selectedProfileArn }
+  if (credentials.profileArn === undefined && credentials.authMethod !== 'api_key') {
+    try {
+      const profileArn = await discoverKiroProfileArn(
+        { region: credentials.region, ...(proxyUrl === undefined ? {} : { proxyUrl }) },
+        {
+          accessToken: credentials.accessToken,
+          region: credentials.region,
+          expiresAt: Date.parse(credentials.expiresAt),
+          authMethod: credentials.authMethod,
+        },
+        controller.signal,
+        postJsonWithHeaders,
+      )
+      if (profileArn !== undefined) credentials = { ...credentials, profileArn }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      console.warn(`Profile ARN discovery did not complete: ${detail}`)
+    }
+  }
+  await saveManagedCredentials(directory, credentials)
+  console.log(`Kiro ${method} login complete. Credentials saved to ${directory}`)
 } catch (error) {
   const detail = error instanceof Error ? error.message : String(error)
   console.error(`Kiro login failed: ${detail}`)

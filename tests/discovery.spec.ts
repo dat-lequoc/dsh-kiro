@@ -50,7 +50,9 @@ describe('Kiro model discovery', () => {
       body: { models: [{ modelId: 'claude-opus-4.8', modelName: 'Claude Opus 4.8' }] },
     })
     const discovery = new KiroModelDiscovery({
-      resolveToken: async () => ({ accessToken: 'access', region: 'us-east-1', expiresAt: Date.now() + 60_000 }),
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'us-east-1', expiresAt: Date.now() + 60_000, authMethod: 'builder-id',
+      }),
       requestJson: request,
     })
     const signal = new AbortController().signal
@@ -78,7 +80,9 @@ describe('Kiro model discovery', () => {
       },
     })
     const discovery = new KiroModelDiscovery({
-      resolveToken: async () => ({ accessToken: 'access', region: 'us-east-1', expiresAt: Date.now() + 60_000 }),
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'us-east-1', expiresAt: Date.now() + 60_000, authMethod: 'builder-id',
+      }),
       requestJson: request,
       profileRequestJson: profiles,
     })

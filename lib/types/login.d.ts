@@ -1,10 +1,18 @@
-/** AWS Builder ID device login and DSH-owned credential persistence. */
-/** JSON transport used by device authorization and polling. */
+/** Multi-method Kiro login and DSH-owned credential persistence. */
+import type { KiroAuthMethod } from './auth.ts';
+export declare const BUILDER_START_URL = "https://view.awsapps.com/start";
 export type LoginJsonTransport = (url: string, body: unknown, signal: AbortSignal) => Promise<{
     status: number;
     body: unknown;
 }>;
-/** In-memory secret state for one device authorization. */
+export type LoginGetTransport = (url: string, headers: Record<string, string>, signal: AbortSignal) => Promise<{
+    status: number;
+    body: unknown;
+}>;
+export interface DeviceLoginOptions {
+    authMethod?: 'builder-id' | 'idc';
+    startUrl?: string;
+}
 export interface DeviceLoginSession {
     clientId: string;
     clientSecret: string;
@@ -14,60 +22,72 @@ export interface DeviceLoginSession {
     intervalSeconds: number;
     expiresAt: number;
     region: string;
+    authMethod: 'builder-id' | 'idc';
+    startUrl: string;
 }
-/** Result of one device-token poll. */
 export type DeviceLoginPoll = {
     status: 'pending';
     intervalSeconds: number;
 } | {
     status: 'completed';
-    credentials: DeviceCredentials;
+    credentials: ManagedCredentials;
 };
-/** Complete credential material returned after device authorization. */
-export interface DeviceCredentials {
+export interface ManagedCredentials {
     accessToken: string;
-    refreshToken: string;
+    refreshToken?: string;
     expiresAt: string;
-    clientId: string;
-    clientSecret: string;
     region: string;
+    authMethod: KiroAuthMethod;
+    profileArn?: string;
+    clientId?: string;
+    clientSecret?: string;
+    startUrl?: string;
+    tokenEndpoint?: string;
+    scope?: string;
 }
-/** Non-secret information suitable for a status API. */
+/** Backward-compatible name for device-flow credentials. */
+export type DeviceCredentials = ManagedCredentials;
 export interface CredentialSummary {
     authenticated: boolean;
     expiresAt?: string;
     region?: string;
+    authMethod?: KiroAuthMethod;
+    profileArn?: string;
+}
+export interface SocialLoginSession {
+    provider: 'google' | 'github';
+    state: string;
+    codeVerifier: string;
+    authUrl: string;
+    expiresAt: number;
 }
 /**
- * Begin an AWS Builder ID device authorization.
- * @param region - AWS OIDC region.
- * @param requestJson - JSON transport, normally sharing the configured Kiro proxy.
- * @param signal - caller cancellation.
- * @returns the device session and browser verification URL.
+ * Begin an AWS Builder ID or IAM Identity Center device authorization.
  */
-export declare function startDeviceLogin(region: string, requestJson: LoginJsonTransport, signal: AbortSignal): Promise<DeviceLoginSession>;
-/**
- * Poll one Builder ID device authorization once.
- * @param session - state returned by {@link startDeviceLogin}.
- * @param requestJson - JSON transport.
- * @param signal - caller cancellation.
- * @returns pending state or complete credentials.
- */
+export declare function startDeviceLogin(region: string, requestJson: LoginJsonTransport, signal: AbortSignal, options?: DeviceLoginOptions): Promise<DeviceLoginSession>;
+/** Poll one device authorization once. */
 export declare function pollDeviceLogin(session: DeviceLoginSession, requestJson: LoginJsonTransport, signal: AbortSignal): Promise<DeviceLoginPoll>;
-/**
- * Save a completed device authorization beneath DSH home.
- * @param directory - managed credential directory.
- * @param credentials - complete device credentials.
- */
+/** Start Kiro desktop social OAuth with PKCE and a manual kiro:// callback. */
+export declare function startSocialLogin(provider: 'google' | 'github'): SocialLoginSession;
+/** Complete Google/GitHub auth from the callback URL Kiro redirected to. */
+export declare function completeSocialLogin(callbackUrl: string, session: SocialLoginSession, requestJson: LoginJsonTransport, signal: AbortSignal): Promise<ManagedCredentials>;
+/** Validate and refresh an imported Kiro refresh token. */
+export declare function importRefreshToken(input: {
+    refreshToken: string;
+    region?: string;
+    profileArn?: string;
+    clientId?: string;
+    clientSecret?: string;
+    startUrl?: string;
+}, requestJson: LoginJsonTransport, signal: AbortSignal): Promise<ManagedCredentials>;
+/** Validate a long-lived Kiro API key against its actual model catalog. */
+export declare function importApiKey(apiKey: string, regionValue: string | undefined, requestGet: LoginGetTransport, signal: AbortSignal): Promise<ManagedCredentials>;
+/** Convert CLIProxyAPI-compatible Microsoft external-IdP JSON into managed credentials. */
+export declare function importExternalIdp(raw: unknown): ManagedCredentials;
+/** Save any normalized credential beneath DSH home with private permissions. */
+export declare function saveManagedCredentials(directory: string, credentials: ManagedCredentials): Promise<void>;
 export declare function saveDeviceCredentials(directory: string, credentials: DeviceCredentials): Promise<void>;
-/**
- * Read non-secret managed credential status.
- * @param directory - credential directory to inspect.
- * @returns authentication metadata, or an unauthenticated summary when absent.
- */
+/** Read only non-secret managed credential metadata for the status API. */
 export declare function credentialSummary(directory: string): Promise<CredentialSummary>;
-/**
- * Delete only credentials owned by this plugin, leaving Kiro IDE files intact.
- * @param directory - managed credential directory.
- */
+/** Delete only credentials owned by this plugin, leaving Kiro IDE files intact. */
 export declare function deleteDeviceCredentials(directory: string): Promise<void>;
