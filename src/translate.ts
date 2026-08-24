@@ -211,8 +211,8 @@ function tokenUsageOf(value: WireTokenUsage | undefined): TokenUsage | undefined
 /**
  * Translate decoded frames into harness chunks.
  * @param frames - decoded event-stream frames in arrival order.
- * @returns deltas as they arrive, then every `block-end`, then one terminal
- *   exact terminal `usage` when supplied by Kiro, and one `finish`.
+ * @returns deltas as they arrive, every `block-end`, exact terminal `usage`
+ *   when supplied by Kiro, then one `finish`.
  * @throws `LlmError` for an in-band service exception frame or a malformed payload.
  */
 export async function* translate(frames: AsyncIterable<WireFrame>): AsyncGenerator<StreamChunk> {
