@@ -356,6 +356,13 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               sendJson(response, 200, { ok: true, value: await completeSocial(await readJson(request)) })
               return
             }
+            if (path === 'login/cancel' && request.method === 'POST') {
+              loginController?.abort('Kiro login cancelled')
+              loginController = undefined
+              login = undefined
+              sendJson(response, 200, { ok: true, value: await status() })
+              return
+            }
             if (path === 'credentials/import' && request.method === 'POST') {
               sendJson(response, 200, { ok: true, value: await importCredential(await readJson(request)) })
               return
