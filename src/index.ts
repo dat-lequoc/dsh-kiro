@@ -46,6 +46,7 @@ export type { KiroAdapterOptions, KiroCatalogModel, KiroConnectionOptions } from
 export {
   clearTokenCache,
   DEFAULT_REGION,
+  kiroAuthMethod,
   kiroCredentialDirectory,
   resolveToken,
   resolveTokenFromDirectories,

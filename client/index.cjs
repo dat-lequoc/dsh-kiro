@@ -18,6 +18,8 @@ window.__ModuleLoader__.load({
       managed: 'Managed by dsh-kiro',
       external: 'Using Kiro IDE / CLI sign-in',
       connectKiro: 'Sign in',
+      connectManaged: 'Sign in with dsh-kiro',
+      externalHint: 'Kiro IDE / CLI owns this credential, so dsh-kiro never modifies or deletes it — which is also why Sign out cannot remove it. Sign in above to store a credential this plugin manages and refreshes itself; it takes precedence over the Kiro one.',
       connectTitle: 'Connect Kiro',
       chooseMethod: 'Choose how you want to connect your Kiro account.',
       recommended: 'Recommended',
@@ -90,6 +92,8 @@ window.__ModuleLoader__.load({
       managed: '由 dsh-kiro 管理',
       external: '正在使用 Kiro IDE / CLI 登录',
       connectKiro: '登录',
+      connectManaged: '使用 dsh-kiro 登录',
+      externalHint: '该凭据由 Kiro IDE / CLI 拥有，dsh-kiro 不会修改或删除它——这也是「退出」无法移除它的原因。可点击上方登录，改用由本插件管理并自动刷新的凭据，它的优先级高于 Kiro 的凭据。',
       connectTitle: '连接 Kiro',
       chooseMethod: '请选择连接 Kiro 账号的方式。',
       recommended: '推荐',
@@ -708,9 +712,9 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
           React.createElement('div', { className: 'dshk-head' },
             React.createElement('div', { className: 'dshk-heading' }, t('account')),
             React.createElement('div', { className: 'dshk-actions' },
-              !status?.authenticated && React.createElement('button', {
+              status?.credentialSource !== 'dsh' && React.createElement('button', {
                 className: 'dshk-btn dshk-primary', disabled: !!busy, onClick: openAuth,
-              }, t('connectKiro')),
+              }, status?.authenticated ? t('connectManaged') : t('connectKiro')),
               status?.authenticated && React.createElement('button', {
                 className: 'dshk-btn', disabled: !!busy, onClick: refreshUsage,
               }, busy === 'usage' ? t('refreshingUsage') : t('refreshUsage')),
@@ -723,6 +727,9 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
             status.authMethod && `${t('authMethod')}: ${status.authMethod}`,
             status.authMethod && status.profileArn && ' · ',
             status.profileArn && `${t('profile')}: ${status.profileArn}`),
+          status?.credentialSource === 'kiro' && React.createElement('div', {
+            className: 'dshk-meta dshk-details',
+          }, t('externalHint')),
           status?.authenticated && usage && React.createElement('div', { className: 'dshk-usage' },
             React.createElement('div', { className: 'dshk-usage-top' },
               React.createElement('span', { className: 'dshk-heading' }, t('usage')),

@@ -3,7 +3,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { clearTokenCache } from './auth.ts'
+import { clearTokenCache, kiroAuthMethod } from './auth.ts'
 import type { KiroAuthMethod } from './auth.ts'
 import { normalizeExternalIdpCredentials } from './external-idp.ts'
 import { assertKiroProfileArn } from './profile.ts'
@@ -550,7 +550,11 @@ export async function credentialSummary(directory: string): Promise<CredentialSu
   const refreshToken = stringField(value, 'refreshToken', 'refresh_token')
   const expiresAt = stringField(value, 'expiresAt', 'expires_at')
   const region = stringField(value, 'region')
-  const method = stringField(value, 'authMethod', 'auth_method') as KiroAuthMethod | undefined
+  // Report the method the adapter will actually act on: Kiro IDE/CLI writes its
+  // own vocabulary (`social`, `IdC`), and showing the raw value would describe a
+  // credential differently from how it is refreshed and routed.
+  const recorded = stringField(value, 'authMethod', 'auth_method')
+  const method = recorded === undefined ? undefined : kiroAuthMethod(recorded, value)
   const profileArn = stringField(value, 'profileArn', 'profile_arn')
   return {
     authenticated: accessToken !== undefined || refreshToken !== undefined,

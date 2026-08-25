@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clearTokenCache, resolveTokenFromDirectories } from '../src/auth.ts'
+import { kiroRequestEndpoint } from '../src/adapter.ts'
 
 const temporaryDirectories: string[] = []
 
@@ -17,6 +18,82 @@ async function credentialDirectory(value: Record<string, unknown>): Promise<stri
   await writeFile(join(directory, 'kiro-auth-token.json'), JSON.stringify(value), { mode: 0o600 })
   return directory
 }
+
+describe('Kiro IDE/CLI credential vocabulary', () => {
+  /**
+   * A fresh install has no plugin-owned sign-in, so the adapter falls back to
+   * Kiro IDE/CLI's own SSO cache. That file records the method with Kiro's
+   * vocabulary — `social`, `IdC`, `external_idp` — which is what its own
+   * `refreshToken()` switches on. A `social` token refreshes against Kiro's
+   * desktop auth service with nothing but the refresh token, so failing it for
+   * a missing client registration strands every fallback user.
+   */
+  it('refreshes an expired Kiro IDE social token without a client registration', async () => {
+    const directory = await credentialDirectory({
+      accessToken: 'stale',
+      refreshToken: 'social-refresh',
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      region: 'us-east-1',
+      authMethod: 'social',
+      profileArn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/social',
+    })
+    const fetchJson = vi.fn().mockResolvedValue({
+      status: 200,
+      body: { accessToken: 'fresh', refreshToken: 'rotated', expiresIn: 3600 },
+    })
+    await expect(resolveTokenFromDirectories([directory], {
+      expiryBufferMs: 0,
+      fetchJson,
+      // Kiro owns this file, so nothing may be written back to it.
+      writableDirectories: [],
+    })).resolves.toMatchObject({ accessToken: 'fresh', authMethod: 'social' })
+    expect(fetchJson.mock.calls[0]?.[0])
+      .toBe('https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken')
+    expect(fetchJson.mock.calls[0]?.[1]).toEqual({ refreshToken: 'social-refresh' })
+  })
+
+  it('routes a social token to the Amazon Q surface, not CodeWhisperer', () => {
+    expect(kiroRequestEndpoint({
+      accessToken: 'a',
+      region: 'us-east-1',
+      expiresAt: Date.now() + 60_000,
+      authMethod: 'social',
+    }, 'us-east-1')).toBe('https://q.us-east-1.amazonaws.com/generateAssistantResponse')
+  })
+
+  it('reads Kiro’s IdC spelling as Identity Center', async () => {
+    // Kiro writes `IdC`; classifying it as Builder ID would send every request
+    // to the wrong upstream surface.
+    const directory = await credentialDirectory({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      region: 'us-east-1',
+      authMethod: 'IdC',
+      profileArn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/idc',
+    })
+    await expect(resolveTokenFromDirectories([directory], {
+      expiryBufferMs: 0,
+      fetchJson: vi.fn(),
+      writableDirectories: [],
+    })).resolves.toMatchObject({ authMethod: 'idc' })
+  })
+
+  it('still explains an AWS SSO token that genuinely cannot be refreshed', async () => {
+    const directory = await credentialDirectory({
+      accessToken: 'stale',
+      refreshToken: 'refresh',
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      region: 'us-east-1',
+      authMethod: 'builder-id',
+    })
+    await expect(resolveTokenFromDirectories([directory], {
+      expiryBufferMs: 0,
+      fetchJson: vi.fn(),
+      writableDirectories: [],
+    })).rejects.toMatchObject({ code: 'INVALID_CREDENTIAL' })
+  })
+})
 
 describe('Kiro token resolution', () => {
   it('discovers and persists profile ARN for a managed current token', async () => {

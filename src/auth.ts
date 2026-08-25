@@ -15,15 +15,29 @@ const SOCIAL_REFRESH_URL = 'https://prod.us-east-1.auth.desktop.kiro.dev/refresh
 const NON_EXPIRING = Number.MAX_SAFE_INTEGER
 export const DEFAULT_REGION = 'us-east-1'
 
-/** Authentication variants compatible with Kiro and 9Router credential records. */
+/**
+ * Authentication variants compatible with Kiro and 9Router credential records.
+ *
+ * `social` is Kiro IDE/CLI's own spelling for a Google or GitHub sign-in. It
+ * matters because a fresh install has no plugin-owned credential and falls back
+ * to Kiro's SSO cache, where this is the value on disk.
+ */
 export type KiroAuthMethod =
   | 'builder-id'
   | 'idc'
   | 'google'
   | 'github'
+  | 'social'
   | 'imported'
   | 'api_key'
   | 'external_idp'
+
+/**
+ * Methods whose refresh needs nothing but the refresh token, because Kiro's own
+ * desktop auth service issues them. Kiro refreshes its `social` tokens exactly
+ * this way, with no client registration involved.
+ */
+const KIRO_SERVICE_METHODS = new Set<KiroAuthMethod>(['imported', 'google', 'github', 'social'])
 
 /** Directory holding Kiro IDE/CLI's shared SSO cache. */
 export function kiroCredentialDirectory(): string {
@@ -99,9 +113,32 @@ function numeric(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
+/**
+ * Classify one credential file's authentication method.
+ *
+ * Two vocabularies land here: this plugin's own, and Kiro IDE/CLI's, which is
+ * what a fresh install reads from the shared SSO cache. Kiro writes `social`,
+ * `IdC`, and `external_idp` — the same three its own refresher switches on — so
+ * those are recognized rather than guessed at, because the guess decides both
+ * the refresh endpoint and the upstream request surface.
+ * @param value - the file's recorded method, if any.
+ * @param source - the whole credential record, for provenance fallbacks.
+ * @returns the normalized method.
+ */
 function inferAuthMethod(value: unknown, source: Record<string, unknown>): KiroAuthMethod {
   if (value === 'builder-id' || value === 'idc' || value === 'google' || value === 'github'
-    || value === 'imported' || value === 'api_key' || value === 'external_idp') return value
+    || value === 'social' || value === 'imported' || value === 'api_key'
+    || value === 'external_idp') return value
+  // Kiro's own spellings, compared case-insensitively: `IdC` is its Identity
+  // Center value, and treating it as Builder ID would pick the wrong endpoint.
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'idc') return 'idc'
+    if (normalized === 'social') return 'social'
+    if (normalized === 'builderid' || normalized === 'builder_id') return 'builder-id'
+    if (normalized === 'apikey' || normalized === 'api-key') return 'api_key'
+    if (normalized === 'externalidp' || normalized === 'external-idp') return 'external_idp'
+  }
   if (source.tokenEndpoint !== undefined || source.token_endpoint !== undefined) return 'external_idp'
   if (source.tokenType === 'API_KEY' || source.token_type === 'API_KEY') return 'api_key'
   const configuredStartUrl = text(source.startUrl ?? source.start_url)
@@ -112,6 +149,21 @@ function inferAuthMethod(value: unknown, source: Record<string, unknown>): KiroA
   }
   if (configuredStartUrl !== undefined && configuredStartUrl !== 'https://view.awsapps.com/start') return 'idc'
   return 'builder-id'
+}
+
+/**
+ * Normalize any credential record's recorded method into the vocabulary this
+ * adapter acts on. Exported so surfaces report the method that actually decides
+ * refresh and endpoint selection, instead of the raw string on disk.
+ * @param value - the file's recorded method, if any.
+ * @param source - the whole credential record, for provenance fallbacks.
+ * @returns the normalized method.
+ */
+export function kiroAuthMethod(
+  value: unknown,
+  source: Record<string, unknown> = {},
+): KiroAuthMethod {
+  return inferAuthMethod(value, source)
 }
 
 function normalizeTokenFile(value: unknown): TokenFile {
@@ -238,10 +290,16 @@ async function refresh(
       clientSecret: client.clientSecret,
       grantType: 'refresh_token',
     })
-  } else if (token.authMethod === 'imported' || token.authMethod === 'google' || token.authMethod === 'github') {
+  } else if (KIRO_SERVICE_METHODS.has(token.authMethod)) {
+    // Kiro's desktop auth service issues these and refreshes them from the
+    // refresh token alone; there is no client registration to look for.
     response = await options.fetchJson(SOCIAL_REFRESH_URL, { refreshToken })
   } else {
-    throw new LlmError('Kiro credential cannot be refreshed without its client registration', 'INVALID_CREDENTIAL')
+    throw new LlmError(
+      `Kiro ${token.authMethod} credential cannot be refreshed without its client registration; `
+      + 'sign in through the Kiro settings page to store a refreshable credential',
+      'INVALID_CREDENTIAL',
+    )
   }
   if (response.status !== 200) {
     throw new LlmError(`Kiro token refresh failed: ${refreshDetail(response.body, response.status)}`, 'AUTH', {

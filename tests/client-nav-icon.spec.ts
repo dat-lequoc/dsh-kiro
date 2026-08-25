@@ -7,6 +7,7 @@
  * scoped-observer, no-polling, and disposal behavior with a minimal DOM double.
  */
 
+import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface FakeNode {
@@ -207,6 +208,18 @@ describe('settings nav icon lifecycle', () => {
     start()
     expect(svg.getAttribute('viewBox')).toBe('0 0 1200 1200')
     expect(svg.innerHTML).toContain('fill="#9046FF"')
+  })
+
+  it('offers a managed sign-in for every credential source but its own', () => {
+    // A Kiro IDE/CLI credential cannot be deleted by this plugin, so hiding the
+    // sign-in button whenever something is authenticated leaves that state with
+    // no action at all — the reported "I can't even log out".
+    const source = readFileSync(new URL('../client/index.cjs', import.meta.url), 'utf8')
+    expect(source).toContain("status?.credentialSource !== 'dsh' && React.createElement('button'")
+    expect(source).toContain("status?.authenticated ? t('connectManaged') : t('connectKiro')")
+    // Sign out stays scoped to plugin-owned credentials, and the card says why.
+    expect(source).toContain("status?.credentialSource === 'dsh' && React.createElement('button'")
+    expect(source).toContain("status?.credentialSource === 'kiro' && React.createElement('div'")
   })
 
   it('stops observing when the plugin is disposed', () => {
