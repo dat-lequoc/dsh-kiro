@@ -8,6 +8,15 @@ import { getJson, postJsonWithHeaders } from './transport.ts'
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000
 const KIRO_USER_AGENT = 'aws-sdk-js/3.738.0 KiroIDE'
+/** Models requested per page; the service caps a page at its own maximum. */
+const PAGE_SIZE = 50
+/**
+ * Pages followed before giving up on a continuation token. `ListAvailableModels`
+ * declares `nextToken` on both its request and its response, so a truncated
+ * catalog is a real possibility; a bounded walk keeps a misbehaving or looping
+ * token from turning discovery into an unbounded request sequence.
+ */
+const MAX_PAGES = 10
 
 interface WireTokenLimits {
   maxInputTokens?: unknown
@@ -156,11 +165,54 @@ export function parseEffortSchema(schema: unknown): ParsedEffortSchema | undefin
 }
 
 /**
+ * Read the bounds of the model's advertised `max_tokens` request field.
+ *
+ * The field is the only output cap `generateAssistantResponse` honors, and the
+ * advertised schema is `additionalProperties: false`, so a value outside the
+ * declared range — or the field itself on a model that does not declare it —
+ * fails validation. Sending it therefore requires reading these bounds first.
+ * @param schema - the model's `additionalModelRequestFieldsSchema`.
+ * @returns the inclusive bounds, or `undefined` when the model declares none.
+ */
+export function parseMaxTokensBounds(
+  schema: unknown,
+): { minimum: number; maximum: number } | undefined {
+  const field = record(record(record(schema)?.properties)?.max_tokens)
+  if (field === undefined || field.type !== 'integer') return undefined
+  const maximum = positiveInteger(field.maximum)
+  if (maximum === undefined) return undefined
+  const minimum = positiveInteger(field.minimum) ?? 1
+  return minimum > maximum ? undefined : { minimum, maximum }
+}
+
+/**
  * Parse Kiro's ListAvailableModels response into harness catalog entries.
  * @param body - decoded JSON response.
  * @returns unique models in provider order.
  */
 export function parseAvailableModels(body: unknown): KiroCatalogModel[] {
+  const models = parseModelPage(body)
+  if (models.length === 0) throw new Error('Kiro ListAvailableModels returned no usable model ids')
+  return models
+}
+
+/**
+ * Read the continuation token of one ListAvailableModels page.
+ * @param body - decoded JSON response.
+ * @returns the token, or `undefined` when this page is the last.
+ */
+export function modelPageToken(body: unknown): string | undefined {
+  const token = record(body)?.nextToken
+  return typeof token === 'string' && token.length > 0 ? token : undefined
+}
+
+/**
+ * Parse one page of the model catalog without requiring it to be non-empty:
+ * a continuation page may legitimately add nothing new.
+ * @param body - decoded JSON response.
+ * @returns the page's models in provider order.
+ */
+function parseModelPage(body: unknown): KiroCatalogModel[] {
   const root = record(body)
   const rawModels = root?.models
   if (!Array.isArray(rawModels)) throw new Error('Kiro ListAvailableModels returned no models array')
@@ -176,6 +228,7 @@ export function parseAvailableModels(body: unknown): KiroCatalogModel[] {
     const contextWindow = positiveInteger(limits?.maxInputTokens)
     const maxTokens = positiveInteger(limits?.maxOutputTokens)
     const effort = parseEffortSchema(model.additionalModelRequestFieldsSchema)
+    const maxTokensBounds = parseMaxTokensBounds(model.additionalModelRequestFieldsSchema)
     const hasEffortSchema = rawModel !== undefined
       && Object.hasOwn(rawModel, 'additionalModelRequestFieldsSchema')
     models.push({
@@ -192,9 +245,9 @@ export function parseAvailableModels(body: unknown): KiroCatalogModel[] {
         defaultReasoningEffort: effort.defaultLevel,
         effortSchemaPath: effort.schemaPath,
       },
+      ...maxTokensBounds === undefined ? {} : { maxTokensBounds },
     })
   }
-  if (models.length === 0) throw new Error('Kiro ListAvailableModels returned no usable model ids')
   return models
 }
 
@@ -294,16 +347,50 @@ export class KiroModelDiscovery {
       : authRegion
     const url = new URL(`${this.endpoint(region)}/ListAvailableModels`)
     url.searchParams.set('origin', 'AI_EDITOR')
-    url.searchParams.set('maxResults', '50')
+    url.searchParams.set('maxResults', String(PAGE_SIZE))
     if (profileArn !== undefined) url.searchParams.set('profileArn', profileArn)
-    const response = await this.requestJson(
-      url.toString(),
-      this.headers(token),
-      connection.proxyUrl,
-      signal,
-    )
-    if (response.status !== 200) throw discoveryError(response.status, response.body)
-    const models = parseAvailableModels(response.body)
+    // `ListAvailableModels` is a paginated operation: the request accepts
+    // `nextToken` and the response returns one. A single page happens to hold
+    // this tier's catalog today, so following the token is what keeps a larger
+    // catalog from being silently truncated to the first page.
+    const models: KiroCatalogModel[] = []
+    const seen = new Set<string>()
+    const usedTokens = new Set<string>()
+    let nextToken: string | undefined
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      let added = 0
+      if (nextToken === undefined) {
+        url.searchParams.delete('nextToken')
+      } else {
+        url.searchParams.set('nextToken', nextToken)
+      }
+      const response = await this.requestJson(
+        url.toString(),
+        this.headers(token),
+        connection.proxyUrl,
+        signal,
+      )
+      if (response.status !== 200) {
+        // A first-page failure is the discovery failure; a later one leaves the
+        // pages already read usable instead of discarding the whole catalog.
+        if (models.length === 0) throw discoveryError(response.status, response.body)
+        break
+      }
+      for (const model of page === 0
+        ? parseAvailableModels(response.body)
+        : parseModelPage(response.body)) {
+        if (seen.has(model.id)) continue
+        seen.add(model.id)
+        models.push(model)
+        added += 1
+      }
+      nextToken = modelPageToken(response.body)
+      // Three stop conditions, because the live endpoint returns an empty
+      // `nextToken` on every page and would otherwise be walked forever: no
+      // usable token, a token already used, or a page that added nothing new.
+      if (nextToken === undefined || usedTokens.has(nextToken) || (page > 0 && added === 0)) break
+      usedTokens.add(nextToken)
+    }
     this.cache.set(key, { expiresAt: Date.now() + this.cacheTtlMs, models })
     return models
   }

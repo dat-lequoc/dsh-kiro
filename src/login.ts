@@ -346,6 +346,56 @@ export async function pollSocialDeviceLogin(
   }
 }
 
+/**
+ * Where an imported refresh token came from. The origin decides the refresh
+ * endpoint and the recorded auth method, and the recorded method decides which
+ * upstream request surface every later turn uses, so it cannot be guessed from
+ * the presence of client credentials alone: AWS Builder ID and IAM Identity
+ * Center credentials both carry a client id and secret.
+ */
+export type RefreshTokenOrigin = 'builder-id' | 'idc' | 'imported'
+
+/**
+ * Resolve the credential origin for one refresh-token import.
+ * @param requested - the explicit origin the caller named, if any.
+ * @param hasClientCredentials - whether an OIDC client id and secret were supplied.
+ * @param resolvedStartUrl - the normalized start URL, if any.
+ * @returns the origin to record.
+ * @throws when the named origin contradicts the supplied credentials.
+ */
+export function resolveRefreshTokenOrigin(
+  requested: RefreshTokenOrigin | undefined,
+  hasClientCredentials: boolean,
+  resolvedStartUrl: string | undefined,
+): RefreshTokenOrigin {
+  if (requested === 'imported' && hasClientCredentials) {
+    throw new Error(
+      'Kiro refresh-token import: an imported Kiro token refreshes against Kiro\'s own service '
+      + 'and takes no OIDC client id or secret',
+    )
+  }
+  if ((requested === 'builder-id' || requested === 'idc') && !hasClientCredentials) {
+    throw new Error(
+      `Kiro refresh-token import: ${requested} credentials refresh through AWS OIDC and require `
+      + 'their client id and client secret',
+    )
+  }
+  if (requested === 'idc' && resolvedStartUrl === undefined) {
+    throw new Error(
+      'Kiro refresh-token import: IAM Identity Center credentials require their start URL',
+    )
+  }
+  if (requested !== undefined) return requested
+  // Derivation of last resort, matching how a stored token file is classified
+  // when it is re-read: no client credentials means Kiro's own service issued
+  // it, and among AWS credentials only an organization start URL distinguishes
+  // Identity Center from Builder ID.
+  if (!hasClientCredentials) return 'imported'
+  return resolvedStartUrl !== undefined && resolvedStartUrl !== BUILDER_START_URL
+    ? 'idc'
+    : 'builder-id'
+}
+
 /** Validate and refresh an imported Kiro refresh token. */
 export async function importRefreshToken(
   input: {
@@ -355,6 +405,8 @@ export async function importRefreshToken(
     clientId?: string
     clientSecret?: string
     startUrl?: string
+    /** Explicit credential origin; omitted falls back to derivation. */
+    authMethod?: RefreshTokenOrigin
   },
   requestJson: LoginJsonTransport,
   signal: AbortSignal,
@@ -365,10 +417,15 @@ export async function importRefreshToken(
     throw new Error('Kiro client id and client secret must be provided together')
   }
   const region = assertKiroRegion(input.region?.trim() || 'us-east-1')
-  const isIdc = input.clientId !== undefined && input.clientSecret !== undefined
+  const hasClientCredentials = input.clientId !== undefined && input.clientSecret !== undefined
+  const resolvedStartUrl = input.startUrl === undefined || input.startUrl.trim().length === 0
+    ? undefined
+    : startUrl(input.startUrl)
+  const origin = resolveRefreshTokenOrigin(input.authMethod, hasClientCredentials, resolvedStartUrl)
+  const viaAwsOidc = origin === 'builder-id' || origin === 'idc'
   const response = await requestJson(
-    isIdc ? `https://oidc.${region}.amazonaws.com/token` : `${KIRO_AUTH_SERVICE}/refreshToken`,
-    isIdc
+    viaAwsOidc ? `https://oidc.${region}.amazonaws.com/token` : `${KIRO_AUTH_SERVICE}/refreshToken`,
+    viaAwsOidc
       ? {
         clientId: input.clientId,
         clientSecret: input.clientSecret,
@@ -393,11 +450,13 @@ export async function importRefreshToken(
     refreshToken: rotated ?? refreshToken,
     expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
     region,
-    authMethod: isIdc ? 'idc' : 'imported',
-    ...isIdc ? {
+    authMethod: origin,
+    ...viaAwsOidc ? {
       clientId: input.clientId,
       clientSecret: input.clientSecret,
-      ...input.startUrl === undefined ? {} : { startUrl: startUrl(input.startUrl) },
+      // Recorded so re-reading the stored file classifies the credential the
+      // same way this import did, instead of re-deriving a different method.
+      startUrl: resolvedStartUrl ?? BUILDER_START_URL,
     } : {},
     ...selectedProfile === undefined ? {} : { profileArn: assertKiroProfileArn(selectedProfile) },
   }

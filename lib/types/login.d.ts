@@ -79,6 +79,23 @@ export declare function pollDeviceLogin(session: DeviceLoginSession, requestJson
 export declare function startSocialDeviceLogin(provider: 'google' | 'github', requestJson: LoginJsonTransport, signal: AbortSignal): Promise<SocialDeviceLoginSession>;
 /** Poll one Kiro Google/GitHub device authorization once. */
 export declare function pollSocialDeviceLogin(session: SocialDeviceLoginSession, requestJson: LoginJsonTransport, signal: AbortSignal): Promise<SocialDeviceLoginPoll>;
+/**
+ * Where an imported refresh token came from. The origin decides the refresh
+ * endpoint and the recorded auth method, and the recorded method decides which
+ * upstream request surface every later turn uses, so it cannot be guessed from
+ * the presence of client credentials alone: AWS Builder ID and IAM Identity
+ * Center credentials both carry a client id and secret.
+ */
+export type RefreshTokenOrigin = 'builder-id' | 'idc' | 'imported';
+/**
+ * Resolve the credential origin for one refresh-token import.
+ * @param requested - the explicit origin the caller named, if any.
+ * @param hasClientCredentials - whether an OIDC client id and secret were supplied.
+ * @param resolvedStartUrl - the normalized start URL, if any.
+ * @returns the origin to record.
+ * @throws when the named origin contradicts the supplied credentials.
+ */
+export declare function resolveRefreshTokenOrigin(requested: RefreshTokenOrigin | undefined, hasClientCredentials: boolean, resolvedStartUrl: string | undefined): RefreshTokenOrigin;
 /** Validate and refresh an imported Kiro refresh token. */
 export declare function importRefreshToken(input: {
     refreshToken: string;
@@ -87,6 +104,8 @@ export declare function importRefreshToken(input: {
     clientId?: string;
     clientSecret?: string;
     startUrl?: string;
+    /** Explicit credential origin; omitted falls back to derivation. */
+    authMethod?: RefreshTokenOrigin;
 }, requestJson: LoginJsonTransport, signal: AbortSignal): Promise<ManagedCredentials>;
 /** Validate a long-lived Kiro API key against its actual model catalog. */
 export declare function importApiKey(apiKey: string, regionValue: string | undefined, requestGet: LoginGetTransport, signal: AbortSignal): Promise<ManagedCredentials>;

@@ -8,7 +8,9 @@
  *   thinking markers; discovered models receive their native request field.
  * - The last user turn is `currentMessage`, not a history entry, and
  *   `conversationState.history` must strictly alternate user, assistant, user,
- *   …, so gaps are filled with continuation placeholders.
+ *   …, so gaps are filled with the same neutral padding the official client
+ *   uses. Padding text must be ordinary: a distinctive system-looking marker is
+ *   imitated by the model and then persisted as visible output.
  * - Tool results are per-turn context on the user message that carries them,
  *   and the service rejects a result whose `toolUseId` no history entry
  *   issued, so unmatched results degrade to text.
@@ -29,8 +31,25 @@ import type {
 
 /** Request origin Kiro attributes IDE traffic to. */
 const ORIGIN = 'AI_EDITOR'
-/** Text standing in for an absent turn, so history keeps alternating. */
-const CONTINUATION = '[system: conversation continues]'
+/**
+ * Neutral user text standing in for an absent turn. Matches the installed Kiro
+ * client's own `CONTINUE_MESSAGE_CONTENT`: ordinary conversational filler the
+ * model has no reason to imitate as output.
+ */
+export const CONTINUE_PADDING = 'Continue'
+/**
+ * Neutral assistant text standing in for a turn with no prose of its own —
+ * the installed Kiro client's `UNDERSTOOD_MESSAGE` content.
+ */
+export const ACKNOWLEDGE_PADDING = 'understood'
+/**
+ * The distinctive placeholder earlier versions used for structural padding.
+ * It looked like an injected system message, so the model imitated it and DSH
+ * persisted the imitation as visible assistant output. Sessions recorded before
+ * the fix still contain it, so replayed history is scrubbed of exact matches
+ * rather than replaying them into the model's context again.
+ */
+export const LEGACY_CONTINUATION = '[system: conversation continues]'
 /** Content for a user turn that carries only tool results. */
 const TOOL_RESULTS_ONLY = 'Tool results provided.'
 /** Tool names CodeWhisperer accepts verbatim. */
@@ -49,6 +68,16 @@ export interface NativeEffortConfig {
   schemaPath: 'output_config' | 'reasoning'
   levels: readonly string[]
   defaultLevel?: string
+}
+
+/** Live per-model generation bounds from the account's model catalog. */
+export interface ModelLimits {
+  /**
+   * Bounds of the model's advertised `max_tokens` request field. Absent means
+   * the model's live schema declares no output cap, and sending one is a
+   * validation failure rather than a no-op.
+   */
+  maxTokensBounds?: { minimum: number; maximum: number }
 }
 
 /** Maximum thinking length published for each effort, in tokens. */
@@ -140,9 +169,68 @@ export function buildEffortRequestFields(
     : { reasoning: { effort } }
 }
 
-/** Join the text blocks of one message. */
+/**
+ * Build `additionalModelRequestFields` for one request.
+ *
+ * This is the only place `generateAssistantResponse` accepts generation
+ * controls: its request shape declares `conversationState`, `profileArn`,
+ * `agentMode`, `additionalModelRequestFields`, and `systemPrompt` and nothing
+ * else, so a top-level `inferenceConfig` is silently dropped by the service.
+ * The object is validated against each model's advertised schema, which is
+ * `additionalProperties: false`, and a model that advertises no schema rejects
+ * the member outright — so nothing may be sent speculatively:
+ *
+ * - unadvertised property → HTTP 400 `property 'x' is not defined in the schema`
+ * - model with no schema → HTTP 400 `additionalModelRequestFields is not supported for this model`
+ *
+ * @param effort - the resolved reasoning effort, when the model takes one.
+ * @param native - the model's live effort contract, absent when it has no schema.
+ * @param maxTokens - the caller's requested output cap, if any.
+ * @param limits - the model's advertised field bounds.
+ * @returns the object to send, or `undefined` when there is nothing valid to send.
+ * @throws `LlmError('INVALID_REQUEST')` for an unusable caller value.
+ */
+export function buildModelRequestFields(
+  effort: string | undefined,
+  native?: NativeEffortConfig,
+  maxTokens?: number,
+  limits?: ModelLimits,
+): Record<string, unknown> | undefined {
+  // No live schema means the member itself is unsupported for this model.
+  if (native === undefined) return undefined
+  const fields: Record<string, unknown> = { ...buildEffortRequestFields(effort, native) }
+  if (maxTokens !== undefined) {
+    if (!Number.isInteger(maxTokens) || maxTokens <= 0) {
+      throw new LlmError(
+        `Kiro requires a positive integer maxTokens; received ${String(maxTokens)}`,
+        'INVALID_REQUEST',
+      )
+    }
+    const bounds = limits?.maxTokensBounds
+    // Clamped into the advertised range rather than dropped: the field has a
+    // floor as well as a ceiling, and a value outside either is refused.
+    if (bounds !== undefined) {
+      fields.max_tokens = Math.min(Math.max(maxTokens, bounds.minimum), bounds.maximum)
+    }
+  }
+  return Object.keys(fields).length === 0 ? undefined : fields
+}
+
+/**
+ * Join the text blocks of one message, dropping blocks that are nothing but an
+ * exact legacy continuation marker.
+ *
+ * Sessions recorded before the padding fix persisted the marker as whole
+ * assistant text blocks; replaying them teaches the model the phrase again and
+ * multiplies it through history. Only a block whose entire text is the marker is
+ * dropped, so a message discussing the phrase in prose keeps it verbatim.
+ */
 function flattenText(blocks: readonly ContentBlock[]): string {
-  return blocks.filter(block => block.type === 'text').map(block => block.text).join('')
+  return blocks
+    .filter(block => block.type === 'text')
+    .filter(block => block.text.trim() !== LEGACY_CONTINUATION)
+    .map(block => block.text)
+    .join('')
 }
 
 /** Reject image content before text flattening can silently erase it. */
@@ -269,7 +357,7 @@ function userMessage(
 ): WireUserInputMessage {
   const content = turn.text.length > 0
     ? turn.text
-    : turn.toolResults.length > 0 ? TOOL_RESULTS_ONLY : CONTINUATION
+    : turn.toolResults.length > 0 ? TOOL_RESULTS_ONLY : CONTINUE_PADDING
   return {
     content,
     modelId: model,
@@ -284,15 +372,16 @@ function userMessage(
  * The final user turn becomes `currentMessage` and carries the tool schemas;
  * everything before it becomes alternating history. A conversation whose last
  * turn is the assistant's (a resumed session, a compaction boundary) gets a
- * continuation user turn so there is something to answer.
+ * neutral continuation user turn so there is something to answer.
  * @param options - the harness request.
  * @param defaults - adapter-level thinking defaults.
  * @param conversationId - identifier for this request's conversation.
  * @param profileArn - CodeWhisperer profile the account bills against.
  * @param nativeEffort - live effort levels and their provider request path.
+ * @param limits - live per-model generation bounds, when discovery supplied them.
  * @returns the request body.
  * @throws `LlmError` when the request carries images, an unusable tool name,
- *   an unsupported effort, or no messages at all.
+ *   an unsupported effort, an unusable generation option, or no messages at all.
  */
 export function serializeRequest(
   options: GenerateOptions,
@@ -300,6 +389,7 @@ export function serializeRequest(
   conversationId: string,
   profileArn?: string,
   nativeEffort?: NativeEffortConfig,
+  limits?: ModelLimits,
 ): WireRequest {
   if (options.messages.length === 0) {
     throw new LlmError('Kiro requires at least one message', 'INVALID_REQUEST')
@@ -307,7 +397,7 @@ export function serializeRequest(
   const effort = resolveEffort(options, defaults, nativeEffort)
   const turns = foldTurns(options.messages)
   if (turns.at(-1)?.role === 'assistant') {
-    turns.push({ role: 'user', turn: { text: CONTINUATION, toolResults: [] } })
+    turns.push({ role: 'user', turn: { text: CONTINUE_PADDING, toolResults: [] } })
   }
   const current = turns.pop()
   /* v8 ignore next -- a non-empty conversation always folds to at least one turn */
@@ -322,8 +412,8 @@ export function serializeRequest(
     const expected = history.length % 2 === 0 ? 'user' : 'assistant'
     if (entry.role !== expected) {
       history.push(expected === 'user'
-        ? { userInputMessage: userMessage({ text: CONTINUATION, toolResults: [] }, options.model) }
-        : { assistantResponseMessage: { content: CONTINUATION } })
+        ? { userInputMessage: userMessage({ text: CONTINUE_PADDING, toolResults: [] }, options.model) }
+        : { assistantResponseMessage: { content: ACKNOWLEDGE_PADDING } })
     }
     if (entry.role === 'user') {
       history.push({
@@ -337,14 +427,18 @@ export function serializeRequest(
     }
     history.push({
       assistantResponseMessage: {
-        content: entry.text.length > 0 ? entry.text : CONTINUATION,
+        // A tool-only assistant step has no prose of its own. Its tool calls are
+        // the content that matters, so the text slot gets the same neutral
+        // acknowledgement the official client uses rather than a marker the
+        // model can learn to emit.
+        content: entry.text.length > 0 ? entry.text : ACKNOWLEDGE_PADDING,
         ...entry.toolUses.length > 0 ? { toolUses: entry.toolUses } : {},
       },
     })
   }
   // History ends on the assistant, since currentMessage supplies the next user turn.
   if (history.length % 2 !== 0) {
-    history.push({ assistantResponseMessage: { content: CONTINUATION } })
+    history.push({ assistantResponseMessage: { content: ACKNOWLEDGE_PADDING } })
   }
 
   const issued = new Set(history.flatMap(entry =>
@@ -392,7 +486,12 @@ export function serializeRequest(
     }
   }
 
-  const additionalModelRequestFields = buildEffortRequestFields(effort, nativeEffort)
+  const additionalModelRequestFields = buildModelRequestFields(
+    effort,
+    nativeEffort,
+    options.maxTokens,
+    limits,
+  )
   return {
     ...profileArn === undefined ? {} : { profileArn },
     ...additionalModelRequestFields === undefined ? {} : { additionalModelRequestFields },

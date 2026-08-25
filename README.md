@@ -158,9 +158,23 @@ Do not wrap this override in `insert:`; the bundle already inserts `llm-kiro`.
 
 Kiro has no separate system slot, so the harness system prompt is placed on the earliest user turn. Conversation history is normalized to Kiro's strict user/assistant alternation, tool schemas are attached to the current turn, and orphaned tool results are carried as text so compaction cannot leave an invalid tool-call reference.
 
-Responses arrive as `vnd.amazon.eventstream` frames. The adapter validates frame boundaries and CRCs, routes `<thinking>` runs into DSH reasoning blocks, preserves text blocks, decodes tool calls, and suppresses known open-weight prompt-format artifacts.
+Responses arrive as `vnd.amazon.eventstream` frames. The adapter validates frame boundaries and CRCs, routes native `reasoningContentEvent` frames and legacy `<thinking>` runs into DSH reasoning blocks, preserves text blocks, decodes tool calls, and suppresses known open-weight prompt-format artifacts.
 
-Kiro's terminal response metadata is mapped to DSH's native token usage buckets: uncached input, output, cache reads, and cache writes. This powers session input/output totals, decode throughput, and cache-hit metrics without estimates or double-counting.
+The terminal `metadataEvent` supplies the finish reason: `END_TURN`, `TOOL_USE`, `MAX_TOKENS`, `MODEL_CONTEXT_WINDOW_EXCEEDED`, `CONTENT_FILTERED`, and `PAUSE_TURN` map to the matching DSH outcome, and an unrecognized reason fails the turn with a diagnosable code instead of reporting success.
+
+### Generation controls
+
+`generateAssistantResponse` declares only `conversationState`, `profileArn`, the agent-mode header, `additionalModelRequestFields`, and `systemPrompt`. There is no `inferenceConfig`: a top-level generation object is accepted and then ignored by the service, which is why this adapter does not send one.
+
+`additionalModelRequestFields` is validated against the schema each model publishes through `ListAvailableModels`, and that schema is `additionalProperties: false`. So the adapter sends only what the selected model advertises:
+
+- Reasoning effort goes to `output_config.effort` or `reasoning.effort`, whichever branch the model declares.
+- A requested `maxTokens` goes to `max_tokens`, clamped into the model's advertised `minimum`/`maximum` (currently 1024–128,000 on the newer Claude routes).
+- Models that publish no schema at all receive no `additionalModelRequestFields`, because the member itself is refused for them.
+
+Nothing else has an accepted placement. `temperature`, `topP`, and stop sequences are not part of this operation's contract — an unadvertised property is rejected outright — so those options are ignored rather than sent.
+
+When — and only when — that same event carries `tokenUsage`, its counters are mapped to DSH's native buckets: uncached input, output, cache reads, and cache writes, with no estimates or double-counting. Kiro does not send `tokenUsage` on every route or deployment; where it is absent the adapter emits no usage at all and DSH shows session token metrics as unavailable rather than substituting a guess. Account credit usage on the settings card is a separate, plan-level figure and is never converted into per-request token counts.
 
 ## Why some Claude routes need a proxy
 
@@ -169,6 +183,8 @@ Kiro can authorize model families by request egress as well as account entitleme
 ## Errors
 
 The adapter maps provider failures to stable DSH codes: `AUTH`, `FORBIDDEN`, `RATE_LIMIT`, `INVALID_MODEL`, `INVALID_REQUEST`, `SERVER`, `TRANSPORT`, `ABORTED`, `TIMEOUT`, `STREAM_CLOSED`, `MALFORMED_RESPONSE`, and `EMPTY_RESPONSE`.
+
+A request Kiro rejects for exceeding its content bound is mapped to `CONTEXT_WINDOW_EXCEEDED` — matched from its `CONTENT_LENGTH_EXCEEDS_THRESHOLD` validation reason and the `Input is too long.` / `Prompt is too long.` wording its own client recognizes. That specific code is what makes DSH run emergency compaction and retry the turn; every other HTTP 400 stays `INVALID_REQUEST`, because compacting cannot fix a malformed request.
 
 ## Development
 
@@ -180,9 +196,18 @@ npm run pack:dist
 
 `npm run check` type-checks, runs the keyless Vitest suite, rebuilds committed artifacts, and syntax-checks the web client and login CLI.
 
+Three `tests/live-*.spec.ts` probes talk to the signed-in Kiro account and are skipped unless `KIRO_LIVE=1` is set. They record which stream frames a real request produces, confirm how an oversized request is classified, and run a two-turn tool loop. Use them to re-verify the wire contract against a live account rather than against fixtures:
+
+```sh
+KIRO_LIVE=1 KIRO_MODEL=claude-opus-5 KIRO_EFFORT=high npx vitest run tests/live-frames.spec.ts
+```
+
+`tests/session-replay.spec.ts` (`DSH_SESSIONS=1`) replays the local DSH session store through the serializer, and `verification/` holds a credit-free harness that proves a context-overflow failure from this adapter makes DSH compact and retry the turn.
+
 ## Known limitations
 
 - Image content is currently rejected with `UNSUPPORTED_CONTENT`.
+- `temperature`, `topP`, and stop sequences have no accepted placement in Kiro's `generateAssistantResponse` request and are ignored.
 - Tool names must match `^[A-Za-z][A-Za-z0-9_]{0,63}$`.
 - SOCKS proxies are not supported.
 

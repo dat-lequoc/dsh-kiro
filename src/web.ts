@@ -22,7 +22,7 @@ import {
   startDeviceLogin,
   startSocialDeviceLogin,
 } from './login.ts'
-import type { DeviceLoginPoll, ManagedCredentials } from './login.ts'
+import type { DeviceLoginPoll, ManagedCredentials, RefreshTokenOrigin } from './login.ts'
 import { getJson, postJson } from './transport.ts'
 import type { KiroUsageService } from './usage.ts'
 
@@ -93,6 +93,19 @@ function requiredText(value: unknown, name: string): string {
   const result = optionalText(value)
   if (result === undefined) throw new Error(`${name} is required`)
   return result
+}
+
+/**
+ * Narrow the credential origin an import request names.
+ * @param value - the request field, if the caller sent one.
+ * @returns the origin, or `undefined` to let the importer derive it.
+ * @throws when the caller names an origin this importer does not support.
+ */
+function refreshTokenOrigin(value: unknown): RefreshTokenOrigin | undefined {
+  const named = optionalText(value)
+  if (named === undefined) return undefined
+  if (named === 'builder-id' || named === 'idc' || named === 'imported') return named
+  throw new Error(`Unsupported Kiro refresh-token credential source "${named}"`)
 }
 
 function publicLogin(flow: LoginFlow | undefined): Record<string, unknown> {
@@ -323,6 +336,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       const clientId = optionalText(body.clientId)
       const clientSecret = optionalText(body.clientSecret)
       const startUrl = optionalText(body.startUrl)
+      const origin = refreshTokenOrigin(body.credentialSource ?? body.authMethod)
       const refreshInput = {
         refreshToken: requiredText(body.refreshToken, 'Kiro refresh token'),
         ...region === undefined ? {} : { region },
@@ -330,6 +344,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
         ...clientId === undefined ? {} : { clientId },
         ...clientSecret === undefined ? {} : { clientSecret },
         ...startUrl === undefined ? {} : { startUrl },
+        ...origin === undefined ? {} : { authMethod: origin },
       }
       credentials = await importRefreshToken(
         refreshInput,

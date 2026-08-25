@@ -264,11 +264,13 @@ describe('serializeRequest', () => {
     expect(currentOf(request).content).toBe('three')
   })
 
-  it('appends a continuation turn when the conversation ends on the assistant', () => {
+  it('appends neutral continuation text when the conversation ends on the assistant', () => {
     // A resumed session replays history whose last entry is the assistant's;
-    // Kiro still needs a user turn to answer.
+    // Kiro still needs a user turn to answer. The padding must be ordinary
+    // conversational text: a distinctive system-looking marker gets imitated by
+    // the model and then persisted as visible assistant output.
     const request = serialize([user('hi'), assistant('done')])
-    expect(currentOf(request).content).toBe('[system: conversation continues]')
+    expect(currentOf(request).content).toBe('Continue')
     expect(history(request)).toEqual([
       { userInputMessage: { content: 'hi', modelId: 'claude-sonnet-4.5', origin: 'AI_EDITOR' } },
       { assistantResponseMessage: { content: 'done' } },
@@ -288,14 +290,14 @@ describe('serializeRequest', () => {
     expect(currentOf(request).content).toBe('RULE\n\nhi')
   })
 
-  it('gives a text-less assistant turn a continuation placeholder', () => {
+  it('gives a text-less assistant turn the neutral acknowledgement', () => {
     const request = serialize([
       user('go'),
       assistant('', [{ id: 'call-1', name: 'run', args: '{}' }]),
       toolResult('call-1', 'ok'),
     ])
     expect(history(request).at(-1)).toMatchObject({
-      assistantResponseMessage: { content: '[system: conversation continues]' },
+      assistantResponseMessage: { content: 'understood' },
     })
   })
 

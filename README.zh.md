@@ -151,13 +151,33 @@ llm-kiro:
 
 Kiro 没有独立 system 槽位，因此 harness system prompt 会放入最早的 user 轮次。历史会标准化为 Kiro 要求的 user/assistant 严格交替；工具 schema 随当前轮次发送；找不到对应调用的工具结果会降为文本，避免压缩后形成无效引用。
 
-响应为 `vnd.amazon.eventstream` 帧。适配器验证帧边界与 CRC，将 `<thinking>` 内容转为 DSH reasoning block，保留文本、解码工具调用，并过滤已知的开放权重提示词格式残留。
+响应为 `vnd.amazon.eventstream` 帧。适配器验证帧边界与 CRC，将原生 `reasoningContentEvent` 帧与旧式 `<thinking>` 内容转为 DSH reasoning block，保留文本、解码工具调用，并过滤已知的开放权重提示词格式残留。
 
-Kiro 的终端响应元数据会映射为 DSH 原生 token usage：未缓存输入、输出、缓存读取与缓存写入。会话可据此显示输入/输出总量、解码吞吐和缓存命中率，且不会估算或重复计数。
+终端 `metadataEvent` 提供结束原因：`END_TURN`、`TOOL_USE`、`MAX_TOKENS`、`MODEL_CONTEXT_WINDOW_EXCEEDED`、`CONTENT_FILTERED`、`PAUSE_TURN` 分别映射到对应的 DSH 结果；无法识别的原因会以可诊断的错误码结束该轮，而不是伪装成成功。
+
+### 生成参数
+
+`generateAssistantResponse` 只声明了 `conversationState`、`profileArn`、agent-mode 请求头、`additionalModelRequestFields` 与 `systemPrompt`，并没有 `inferenceConfig`：顶层生成参数对象会被服务接受但直接忽略，因此本适配器不再发送它。
+
+`additionalModelRequestFields` 会按每个模型通过 `ListAvailableModels` 公布的 schema 校验，而该 schema 是 `additionalProperties: false`。因此适配器只发送当前模型明确公布的字段：
+
+- 推理档位写入模型声明的 `output_config.effort` 或 `reasoning.effort`。
+- 请求中的 `maxTokens` 写入 `max_tokens`，并夹到模型公布的 `minimum`/`maximum` 之间（较新的 Claude 路由目前是 1024–128000）。
+- 完全不公布 schema 的模型不会收到 `additionalModelRequestFields`，因为该成员本身会被拒绝。
+
+其余参数没有可用位置。`temperature`、`topP` 与 stop 序列不属于该操作的契约（发送未公布的属性会直接被拒绝），因此这些选项会被忽略而不是发送。
+
+只有当同一事件携带 `tokenUsage` 时，其计数才会映射为 DSH 原生 token usage：未缓存输入、输出、缓存读取与缓存写入，且不估算、不重复计数。Kiro 并非在所有路由或部署上都发送 `tokenUsage`；缺失时适配器不会产生任何用量数据，DSH 会将会话 token 指标显示为不可用，而不是用推测值代替。设置页中的账号 credits 使用量属于套餐层面的独立数据，绝不会换算为单次请求的 token 数。
 
 ## 为什么部分 Claude 路由需要代理
 
 Kiro 可能同时按账号权益与请求出口授权模型系列。未授权出口下，`claude-*` 可能返回 `INVALID_MODEL`，而开放权重模型仍可工作。需要时可用 `proxyUrl` 提供合适出口。代理使用 HTTP `CONNECT`，TLS 在隧道内协商，因此代理能看到目标主机名，但看不到 bearer token 或请求正文。
+
+## 错误
+
+适配器会把上游失败映射为稳定的 DSH 错误码：`AUTH`、`FORBIDDEN`、`RATE_LIMIT`、`INVALID_MODEL`、`INVALID_REQUEST`、`SERVER`、`TRANSPORT`、`ABORTED`、`TIMEOUT`、`STREAM_CLOSED`、`MALFORMED_RESPONSE`、`EMPTY_RESPONSE`。
+
+当 Kiro 因内容超限拒绝请求时，会映射为 `CONTEXT_WINDOW_EXCEEDED`——依据其 `CONTENT_LENGTH_EXCEEDS_THRESHOLD` 校验原因以及官方客户端同样识别的 `Input is too long.` / `Prompt is too long.` 文案。只有这个错误码会触发 DSH 的紧急压缩并重试该轮；其他 HTTP 400 仍是 `INVALID_REQUEST`，因为压缩无法修复格式错误的请求。
 
 ## 开发
 
@@ -169,9 +189,18 @@ npm run pack:dist
 
 `npm run check` 会执行类型检查、keyless Vitest 测试、重建提交产物，并检查 Web client 与登录 CLI 语法。
 
+`tests/live-*.spec.ts` 中的三个探针会访问已登录的 Kiro 账号，未设置 `KIRO_LIVE=1` 时自动跳过。它们分别记录真实请求返回的流帧、验证超长请求的分类结果，并跑通两轮工具调用循环，用于对照真实账号（而非固定 fixture）核验协议契约：
+
+```sh
+KIRO_LIVE=1 KIRO_MODEL=claude-opus-5 KIRO_EFFORT=high npx vitest run tests/live-frames.spec.ts
+```
+
+`tests/session-replay.spec.ts`（`DSH_SESSIONS=1`）会把本地 DSH 会话存档重放给序列化器；`verification/` 目录提供一个不消耗额度的验证装置，用于证明本适配器上报的上下文溢出会触发 DSH 压缩并重试该轮。
+
 ## 已知限制
 
 - 图片输入目前以 `UNSUPPORTED_CONTENT` 拒绝。
+- `temperature`、`topP` 与 stop 序列在 Kiro 的 `generateAssistantResponse` 请求中没有可用位置，会被忽略。
 - 工具名必须匹配 `^[A-Za-z][A-Za-z0-9_]{0,63}$`。
 - 不支持 SOCKS 代理。
 

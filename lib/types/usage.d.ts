@@ -11,7 +11,14 @@ export interface KiroUsageRow {
     usedPercent: number;
     remainingPercent: number;
     resetAt?: string;
-    kind: 'subscription' | 'bonus';
+    kind: 'subscription' | 'bonus' | 'addon';
+    /**
+     * True when the provider reports no usable bound for this row — Kiro's
+     * no-limit sentinel or an absent limit. Percentages are meaningless for such
+     * a row and are published as zero, so surfaces must branch on this flag
+     * instead of rendering a fabricated ceiling.
+     */
+    unlimited?: boolean;
 }
 export interface KiroUsage {
     plan: string;
@@ -27,7 +34,17 @@ export interface KiroUsageServiceOptions {
     postRequest?: UsagePostRequest;
     cacheTtlMs?: number;
 }
-/** Normalize the public quota response without retaining account identity fields. */
+/**
+ * Normalize the public quota response without retaining account identity fields.
+ *
+ * Every structure the installed Kiro client reads is covered: subscription
+ * breakdowns, the welcome trial (only while the provider calls it `ACTIVE`),
+ * named bonus grants, and purchased overage credit packs. Unknown or unbounded
+ * limits are marked, never converted into a percentage.
+ * @param value - the decoded GetUsageLimits response.
+ * @param now - current epoch milliseconds, injectable for tests.
+ * @returns the normalized usage snapshot.
+ */
 export declare function parseKiroUsage(value: unknown, now?: number): KiroUsage;
 /** Account-scoped five-minute usage cache with forced refresh support. */
 export declare class KiroUsageService {

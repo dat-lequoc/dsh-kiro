@@ -8,8 +8,10 @@
  * @module dsh-kiro/adapter
  */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
+  CONTEXT_WINDOW_EXCEEDED_CODE,
+  isContextWindowExceededError,
   LlmAdapter,
   LlmError,
   ProviderRequestId,
@@ -49,6 +51,19 @@ const LEGACY_REASONING_EFFORTS = ['off', 'low', 'medium', 'high'] as const
 /** The only effort a thinking-disabled deployment publishes. */
 const OFF_ONLY_REASONING_EFFORTS = [{ id: OFF, name: 'Off' }] as const
 
+/**
+ * Kiro's `ValidationException` reason for a request whose serialized content
+ * exceeded the service bound. Kiro's own client maps exactly this reason to a
+ * context-window-exceeded failure, which is what makes DSH compaction run.
+ */
+const CONTEXT_OVERFLOW_REASON = 'CONTENT_LENGTH_EXCEEDS_THRESHOLD'
+/**
+ * Message wording Kiro's own client treats as context overflow. Kept byte-for-byte
+ * with `src/utils/context-overflow.ts` in the installed Kiro agent so a provider
+ * message that reaches recovery there also reaches it here.
+ */
+const CONTEXT_OVERFLOW_MESSAGES = ['input is too long', 'prompt is too long'] as const
+
 /** Location of Kiro's native effort field in `additionalModelRequestFields`. */
 export type KiroEffortSchemaPath = 'output_config' | 'reasoning'
 
@@ -81,6 +96,13 @@ export interface KiroCatalogModel {
   defaultReasoningEffort?: string
   /** Native request-object branch that receives the selected effort. */
   effortSchemaPath?: KiroEffortSchemaPath
+  /**
+   * Inclusive bounds of the `max_tokens` property this model's live schema
+   * advertises. Present only when the model declares the field: the schema is
+   * `additionalProperties: false`, so an output cap can be sent to this model
+   * and to no other.
+   */
+  maxTokensBounds?: { minimum: number; maximum: number }
 }
 
 /**
@@ -162,6 +184,24 @@ function modelInfo(provider: string, model: KiroCatalogModel): LlmModelInfo {
 }
 
 /**
+ * Recognize a Kiro HTTP 400 body that reports a context-window overflow rather
+ * than an ordinary validation failure. Deliberately narrow: only Kiro's own
+ * validation reason, the two message phrases its client matches, and the
+ * harness's provider-neutral wording classifier. Every other 400 stays a plain
+ * invalid request, because mapping all of them would make DSH compact and
+ * retry turns that a smaller context cannot fix.
+ * @param body - the response body text, when available.
+ * @returns true when the body identifies a context-overflow rejection.
+ */
+export function isKiroContextOverflow(body?: string): boolean {
+  if (body === undefined || body.length === 0) return false
+  if (body.includes(CONTEXT_OVERFLOW_REASON)) return true
+  const normalized = body.toLowerCase()
+  return CONTEXT_OVERFLOW_MESSAGES.some(phrase => normalized.includes(phrase))
+    || isContextWindowExceededError(body)
+}
+
+/**
  * Map a Kiro HTTP status and error body to a stable harness code.
  * @param status - status of a non-2xx response.
  * @param body - the response body text, when available.
@@ -177,10 +217,42 @@ export function httpErrorCode(status: number, body?: string): string {
   if (status === 429) return 'RATE_LIMIT'
   if (status === 400) {
     if (body !== undefined && body.includes('INVALID_MODEL_ID')) return 'INVALID_MODEL'
+    // Compaction's emergency recovery is keyed to this exact code, so an
+    // overflow reported as INVALID_REQUEST silently ends the turn instead.
+    if (isKiroContextOverflow(body)) return CONTEXT_WINDOW_EXCEEDED_CODE
     return 'INVALID_REQUEST'
   }
   if (status >= 500) return 'SERVER'
   return `HTTP_${status}`
+}
+
+/**
+ * Derive the provider conversation id for one DSH session.
+ *
+ * Kiro correlates caching and diagnostics by `conversationId`, so a new random
+ * id per turn presents one durable session as a stream of unrelated
+ * conversations. The id is a keyed digest of the DSH session id rather than the
+ * id itself: stable for the session, separate across sessions, and carrying no
+ * recoverable DSH identifier upstream.
+ * @param sessionId - the DSH session identity stamped on the request, if any.
+ * @returns a UUID-shaped conversation id, random when no session is named.
+ */
+export function conversationIdFor(sessionId?: string): string {
+  if (sessionId === undefined || sessionId.length === 0) return randomUUID()
+  const digest = createHash('sha256').update(`dsh-kiro:conversation:${sessionId}`).digest()
+  // RFC 9562 layout with version 8 (custom) so the value is a well-formed UUID
+  // the service accepts, and never mistakable for a random v4.
+  const bytes = Uint8Array.prototype.slice.call(digest, 0, 16)
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x80
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80
+  const hex = Buffer.from(bytes).toString('hex')
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join('-')
 }
 
 /**
@@ -317,9 +389,12 @@ export class KiroAdapter extends LlmAdapter {
     const body = JSON.stringify(serializeRequest(
       options,
       connection.defaults,
-      randomUUID(),
+      conversationIdFor(options.sessionId),
       profileArn,
       nativeEffort,
+      selected?.maxTokensBounds === undefined
+        ? undefined
+        : { maxTokensBounds: selected.maxTokensBounds },
     ))
     const response = await post({
       url,

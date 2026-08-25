@@ -25,11 +25,31 @@ interface ParsedEffortSchema {
 /** Parse the same two effort-schema branches used by the installed Kiro client. */
 export declare function parseEffortSchema(schema: unknown): ParsedEffortSchema | undefined;
 /**
+ * Read the bounds of the model's advertised `max_tokens` request field.
+ *
+ * The field is the only output cap `generateAssistantResponse` honors, and the
+ * advertised schema is `additionalProperties: false`, so a value outside the
+ * declared range — or the field itself on a model that does not declare it —
+ * fails validation. Sending it therefore requires reading these bounds first.
+ * @param schema - the model's `additionalModelRequestFieldsSchema`.
+ * @returns the inclusive bounds, or `undefined` when the model declares none.
+ */
+export declare function parseMaxTokensBounds(schema: unknown): {
+    minimum: number;
+    maximum: number;
+} | undefined;
+/**
  * Parse Kiro's ListAvailableModels response into harness catalog entries.
  * @param body - decoded JSON response.
  * @returns unique models in provider order.
  */
 export declare function parseAvailableModels(body: unknown): KiroCatalogModel[];
+/**
+ * Read the continuation token of one ListAvailableModels page.
+ * @param body - decoded JSON response.
+ * @returns the token, or `undefined` when this page is the last.
+ */
+export declare function modelPageToken(body: unknown): string | undefined;
 /** Cached account-specific model discovery used by the adapter and web UI. */
 export declare class KiroModelDiscovery {
     private readonly options;

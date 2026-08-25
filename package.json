@@ -1,7 +1,7 @@
 {
   "name": "dsh-kiro",
   "description": "Kiro provider for DeepSeek Harness with multi-method login, usage, model controls, and token/profile refresh",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "type": "module",
   "license": "MIT",
   "author": {
@@ -17,12 +17,12 @@
     "dsh",
     "dsh-plugin",
     "kiro",
-    "codewhisperer",
+    "kiro-cli",
+    "kiro2api",
     "claude",
     "opus",
     "oauth",
-    "reasoning",
-    "llm-adapter"
+    "reasoning"
   ],
   "homepage": "https://github.com/dat-lequoc/dsh-kiro#readme",
   "bugs": {

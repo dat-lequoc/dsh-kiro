@@ -55,9 +55,11 @@ export type { DirectoryTokenSourceOptions, KiroAuthMethod } from './auth.ts'
 export {
   discoverKiroProfileArn,
   KiroModelDiscovery,
+  modelPageToken,
   modelSupportsThinking,
   parseAvailableModels,
   parseEffortSchema,
+  parseMaxTokensBounds,
 } from './discovery.ts'
 export {
   compareKiroModels,
@@ -76,6 +78,7 @@ export {
   importRefreshToken,
   pollDeviceLogin,
   pollSocialDeviceLogin,
+  resolveRefreshTokenOrigin,
   saveDeviceCredentials,
   saveManagedCredentials,
   startDeviceLogin,
@@ -87,6 +90,7 @@ export type {
   DeviceLoginPoll,
   DeviceLoginSession,
   ManagedCredentials,
+  RefreshTokenOrigin,
   SocialDeviceLoginPoll,
   SocialDeviceLoginSession,
 } from './login.ts'
@@ -96,7 +100,8 @@ export { assertKiroRegion } from './region.ts'
 export { getJson, parseProxyUrl, postForm, postJson, postJsonWithHeaders } from './transport.ts'
 export { KiroUsageService, parseKiroUsage } from './usage.ts'
 export type { KiroUsage, KiroUsageRow, KiroUsageServiceOptions } from './usage.ts'
-export type { RequestDefaults } from './serialize.ts'
+export { buildModelRequestFields } from './serialize.ts'
+export type { ModelLimits, RequestDefaults } from './serialize.ts'
 export type * from './types.ts'
 
 export const name = 'dsh-kiro'
@@ -184,6 +189,10 @@ const catalogModel: z<KiroCatalogModel> = z.object({
   reasoningEfforts: z.array(z.string()),
   defaultReasoningEffort: z.string(),
   effortSchemaPath: z.union(['output_config', 'reasoning']),
+  maxTokensBounds: z.object({
+    minimum: z.number().step(1).min(1),
+    maximum: z.number().step(1).min(1),
+  }),
 })
 
 export const Config: z<Config> = z.object({
@@ -240,6 +249,30 @@ function resolveModels(models: readonly KiroCatalogModel[] | undefined): KiroCat
     if ((model.effortSchemaPath === undefined) !== (reasoningEfforts === undefined)) {
       throw new Error(`llm-kiro: catalog model "${model.id}" needs both reasoningEfforts and effortSchemaPath`)
     }
+    // Schemastery materializes an omitted optional object as `{}`; a bound pair
+    // is only usable when both ends are present and ordered.
+    const bounds = model.maxTokensBounds
+    const maxTokensBounds = bounds === undefined
+      || bounds.minimum === undefined
+      || bounds.maximum === undefined
+      ? undefined
+      : bounds
+    if (maxTokensBounds !== undefined
+      && (!Number.isInteger(maxTokensBounds.minimum)
+        || !Number.isInteger(maxTokensBounds.maximum)
+        || maxTokensBounds.minimum < 1
+        || maxTokensBounds.maximum < maxTokensBounds.minimum)) {
+      throw new Error(
+        `llm-kiro: catalog model "${model.id}" maxTokensBounds must be ordered positive integers`,
+      )
+    }
+    if (maxTokensBounds !== undefined && model.effortSchemaPath === undefined) {
+      // The bounds come from the same live schema as the effort branch, and the
+      // whole member is refused by a model that advertises no schema.
+      throw new Error(
+        `llm-kiro: catalog model "${model.id}" maxTokensBounds requires the live request-field schema`,
+      )
+    }
     if (seen.has(model.id)) throw new Error(`llm-kiro: duplicate catalog model "${model.id}"`)
     seen.add(model.id)
     return {
@@ -254,6 +287,7 @@ function resolveModels(models: readonly KiroCatalogModel[] | undefined): KiroCat
         ? {}
         : { defaultReasoningEffort: model.defaultReasoningEffort },
       ...model.effortSchemaPath === undefined ? {} : { effortSchemaPath: model.effortSchemaPath },
+      ...maxTokensBounds === undefined ? {} : { maxTokensBounds: { ...maxTokensBounds } },
     }
   })
 }

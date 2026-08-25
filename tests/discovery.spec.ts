@@ -5,6 +5,7 @@ import {
   modelSupportsThinking,
   parseAvailableModels,
   parseEffortSchema,
+  parseMaxTokensBounds,
 } from '../src/discovery.ts'
 
 const connection = {
@@ -145,8 +146,161 @@ describe('Kiro model discovery', () => {
     expect(request.mock.calls[0]?.[0]).toContain('profileArn=arn%3Aaws%3Acodewhisperer%3Aeu-central-1')
   })
 
+  it('reads the advertised max_tokens bounds from the live schema', () => {
+    // Observed live for claude-opus-5: the schema declares an integer
+    // `max_tokens` with a floor and a ceiling, and forbids extra properties.
+    const schema = {
+      type: 'object',
+      properties: {
+        thinking: { type: 'object', properties: { type: { type: 'string', enum: ['adaptive', 'disabled'] } } },
+        output_config: { type: 'object', properties: { effort: { type: 'string', enum: ['low', 'high'], default: 'high' } } },
+        max_tokens: { type: 'integer', minimum: 1024, maximum: 128_000 },
+      },
+      additionalProperties: false,
+    }
+    expect(parseMaxTokensBounds(schema)).toEqual({ minimum: 1024, maximum: 128_000 })
+    const models = parseAvailableModels({
+      models: [
+        { modelId: 'claude-opus-5', additionalModelRequestFieldsSchema: schema },
+        { modelId: 'gpt-5.6-sol', additionalModelRequestFieldsSchema: {
+          type: 'object',
+          properties: { reasoning: { type: 'object', properties: { effort: { type: 'string', enum: ['low', 'high'] } } } },
+          additionalProperties: false,
+        } },
+        { modelId: 'claude-sonnet-4.5', additionalModelRequestFieldsSchema: null },
+      ],
+    })
+    expect(models[0]?.maxTokensBounds).toEqual({ minimum: 1024, maximum: 128_000 })
+    // A model whose schema omits the field, and one with no schema at all, must
+    // carry no bounds: the request member is refused in both cases.
+    expect(models[1]?.maxTokensBounds).toBeUndefined()
+    expect(models[2]?.maxTokensBounds).toBeUndefined()
+  })
+
+  it('ignores a malformed or inverted max_tokens declaration', () => {
+    expect(parseMaxTokensBounds({ properties: { max_tokens: { type: 'string' } } })).toBeUndefined()
+    expect(parseMaxTokensBounds({ properties: { max_tokens: { type: 'integer' } } })).toBeUndefined()
+    expect(parseMaxTokensBounds({
+      properties: { max_tokens: { type: 'integer', minimum: 4096, maximum: 1024 } },
+    })).toBeUndefined()
+    expect(parseMaxTokensBounds({
+      properties: { max_tokens: { type: 'integer', maximum: 64_000 } },
+    })).toEqual({ minimum: 1, maximum: 64_000 })
+  })
+
   it('fails loudly when Kiro returns no usable model ids', () => {
     expect(() => parseAvailableModels({ models: [{ modelName: 'missing id' }] }))
       .toThrow(/no usable model ids/u)
+  })
+
+  it('follows the continuation token so a large catalog is not truncated', async () => {
+    // ListAvailableModels declares nextToken on both its request and response;
+    // a catalog larger than one page arrives split across them.
+    const request = vi.fn()
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { models: [{ modelId: 'claude-opus-5' }], nextToken: 'page-2' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { models: [{ modelId: 'claude-sonnet-5' }, { modelId: 'claude-opus-5' }] },
+      })
+    const discovery = new KiroModelDiscovery({
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'us-east-1', expiresAt: Date.now() + 60_000, authMethod: 'builder-id',
+      }),
+      requestJson: request,
+    })
+    const models = await discovery.list(connection, new AbortController().signal)
+    // The duplicate id from the second page is dropped, not repeated.
+    expect(models.map(model => model.id)).toEqual(['claude-opus-5', 'claude-sonnet-5'])
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(request.mock.calls[0]?.[0]).not.toContain('nextToken')
+    expect(request.mock.calls[1]?.[0]).toContain('nextToken=page-2')
+  })
+
+  it('stops instead of replaying a repeated continuation token', async () => {
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      body: { models: [{ modelId: 'claude-opus-5' }], nextToken: 'same' },
+    })
+    const discovery = new KiroModelDiscovery({
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'us-east-1', expiresAt: Date.now() + 60_000, authMethod: 'builder-id',
+      }),
+      requestJson: request,
+    })
+    await expect(discovery.list(connection, new AbortController().signal))
+      .resolves.toHaveLength(1)
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it('treats an empty continuation token as the end of the catalog', async () => {
+    // The live endpoint returns `nextToken: ""` on every page while repeating
+    // the same models, so an empty token must not be followed even once.
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      body: { models: [{ modelId: 'claude-opus-5' }], nextToken: '' },
+    })
+    const discovery = new KiroModelDiscovery({
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'us-east-1', expiresAt: Date.now() + 60_000, authMethod: 'builder-id',
+      }),
+      requestJson: request,
+    })
+    await expect(discovery.list(connection, new AbortController().signal))
+      .resolves.toHaveLength(1)
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops when a continuation page adds no new model', async () => {
+    // A paginator that keeps handing out fresh tokens while repeating its
+    // contents would otherwise be walked to the page cap on every discovery.
+    let issued = 0
+    const request = vi.fn().mockImplementation(() => {
+      issued += 1
+      return Promise.resolve({
+        status: 200,
+        body: { models: [{ modelId: 'claude-opus-5' }], nextToken: `token-${issued}` },
+      })
+    })
+    const discovery = new KiroModelDiscovery({
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'us-east-1', expiresAt: Date.now() + 60_000, authMethod: 'builder-id',
+      }),
+      requestJson: request,
+    })
+    await expect(discovery.list(connection, new AbortController().signal))
+      .resolves.toHaveLength(1)
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the pages it already read when a later page fails', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { models: [{ modelId: 'claude-opus-5' }], nextToken: 'page-2' },
+      })
+      .mockResolvedValueOnce({ status: 500, body: {} })
+    const discovery = new KiroModelDiscovery({
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'us-east-1', expiresAt: Date.now() + 60_000, authMethod: 'builder-id',
+      }),
+      requestJson: request,
+    })
+    await expect(discovery.list(connection, new AbortController().signal))
+      .resolves.toEqual([expect.objectContaining({ id: 'claude-opus-5' })])
+  })
+
+  it('still fails when the first page fails', async () => {
+    const request = vi.fn().mockResolvedValue({ status: 403, body: { message: 'nope' } })
+    const discovery = new KiroModelDiscovery({
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'us-east-1', expiresAt: Date.now() + 60_000, authMethod: 'builder-id',
+      }),
+      requestJson: request,
+    })
+    await expect(discovery.list(connection, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' })
   })
 })

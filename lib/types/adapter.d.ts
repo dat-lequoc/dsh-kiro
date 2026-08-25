@@ -37,6 +37,16 @@ export interface KiroCatalogModel {
     defaultReasoningEffort?: string;
     /** Native request-object branch that receives the selected effort. */
     effortSchemaPath?: KiroEffortSchemaPath;
+    /**
+     * Inclusive bounds of the `max_tokens` property this model's live schema
+     * advertises. Present only when the model declares the field: the schema is
+     * `additionalProperties: false`, so an output cap can be sent to this model
+     * and to no other.
+     */
+    maxTokensBounds?: {
+        minimum: number;
+        maximum: number;
+    };
 }
 /**
  * Validated connection facts for one operation. The plugin's
@@ -91,12 +101,35 @@ export declare function kiroRequestEndpoint(token: KiroToken, region: string): s
 /** Add the token discriminator required by API-key and external-IdP auth. */
 export declare function kiroTokenTypeHeaders(token: KiroToken): Record<string, string>;
 /**
+ * Recognize a Kiro HTTP 400 body that reports a context-window overflow rather
+ * than an ordinary validation failure. Deliberately narrow: only Kiro's own
+ * validation reason, the two message phrases its client matches, and the
+ * harness's provider-neutral wording classifier. Every other 400 stays a plain
+ * invalid request, because mapping all of them would make DSH compact and
+ * retry turns that a smaller context cannot fix.
+ * @param body - the response body text, when available.
+ * @returns true when the body identifies a context-overflow rejection.
+ */
+export declare function isKiroContextOverflow(body?: string): boolean;
+/**
  * Map a Kiro HTTP status and error body to a stable harness code.
  * @param status - status of a non-2xx response.
  * @param body - the response body text, when available.
  * @returns the normalized harness error code.
  */
 export declare function httpErrorCode(status: number, body?: string): string;
+/**
+ * Derive the provider conversation id for one DSH session.
+ *
+ * Kiro correlates caching and diagnostics by `conversationId`, so a new random
+ * id per turn presents one durable session as a stream of unrelated
+ * conversations. The id is a keyed digest of the DSH session id rather than the
+ * id itself: stable for the session, separate across sessions, and carrying no
+ * recoverable DSH identifier upstream.
+ * @param sessionId - the DSH session identity stamped on the request, if any.
+ * @returns a UUID-shaped conversation id, random when no session is named.
+ */
+export declare function conversationIdFor(sessionId?: string): string;
 /**
  * The Kiro adapter. One instance serves the whole route: the harness model
  * name is the wire `modelId`, so adding a Kiro model is configuration rather

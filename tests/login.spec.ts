@@ -4,12 +4,15 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clearTokenCache, resolveTokenFromDirectories } from '../src/auth.ts'
 import {
+  BUILDER_START_URL,
   credentialSummary,
   deleteDeviceCredentials,
   importApiKey,
   importExternalIdp,
+  importRefreshToken,
   pollDeviceLogin,
   pollSocialDeviceLogin,
+  resolveRefreshTokenOrigin,
   saveDeviceCredentials,
   startDeviceLogin,
   startSocialDeviceLogin,
@@ -283,5 +286,97 @@ describe('additional Kiro auth methods', () => {
     })
     expect(() => importExternalIdp({ ...valid, token_endpoint: 'https://evil.example/token' }))
       .toThrow(/approved Microsoft login host/u)
+  })
+})
+
+describe('refresh-token import by credential origin', () => {
+  const refreshed = {
+    status: 200,
+    body: { accessToken: 'access', refreshToken: 'rotated', expiresIn: 3600 },
+  }
+
+  /** One import against a stubbed token endpoint. */
+  async function importToken(input: Parameters<typeof importRefreshToken>[0]) {
+    const request = vi.fn().mockResolvedValue(refreshed)
+    const credentials = await importRefreshToken(input, request, new AbortController().signal)
+    return { credentials, url: request.mock.calls[0]?.[0] as string, body: request.mock.calls[0]?.[1] }
+  }
+
+  it('refreshes a bare Kiro token against Kiro’s own service', async () => {
+    const { credentials, url, body } = await importToken({ refreshToken: 'kiro-refresh' })
+    expect(url).toBe('https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken')
+    expect(body).toEqual({ refreshToken: 'kiro-refresh' })
+    expect(credentials).toMatchObject({ authMethod: 'imported', refreshToken: 'rotated' })
+    expect(credentials.clientId).toBeUndefined()
+  })
+
+  it('records an explicit Builder ID origin instead of guessing Identity Center', async () => {
+    // Builder ID credentials carry a client id and secret too, so presence of
+    // client credentials cannot decide the origin: guessing `idc` would send
+    // every later turn to the wrong upstream surface.
+    const { credentials, url } = await importToken({
+      refreshToken: 'aws-refresh',
+      clientId: 'client',
+      clientSecret: 'secret',
+      authMethod: 'builder-id',
+    })
+    expect(url).toBe('https://oidc.us-east-1.amazonaws.com/token')
+    expect(credentials).toMatchObject({
+      authMethod: 'builder-id',
+      clientId: 'client',
+      startUrl: BUILDER_START_URL,
+    })
+  })
+
+  it('records an Identity Center origin with its start URL', async () => {
+    const { credentials, url } = await importToken({
+      refreshToken: 'aws-refresh',
+      clientId: 'client',
+      clientSecret: 'secret',
+      startUrl: 'https://example.awsapps.com/start',
+      authMethod: 'idc',
+    })
+    expect(url).toBe('https://oidc.us-east-1.amazonaws.com/token')
+    expect(credentials).toMatchObject({
+      authMethod: 'idc',
+      startUrl: 'https://example.awsapps.com/start',
+    })
+  })
+
+  it('derives Builder ID for AWS client credentials with no organization start URL', async () => {
+    const { credentials } = await importToken({
+      refreshToken: 'aws-refresh',
+      clientId: 'client',
+      clientSecret: 'secret',
+    })
+    expect(credentials.authMethod).toBe('builder-id')
+  })
+
+  it('derives Identity Center only from an organization start URL', async () => {
+    const { credentials } = await importToken({
+      refreshToken: 'aws-refresh',
+      clientId: 'client',
+      clientSecret: 'secret',
+      startUrl: 'https://example.awsapps.com/start',
+    })
+    expect(credentials.authMethod).toBe('idc')
+    expect(resolveRefreshTokenOrigin(undefined, true, BUILDER_START_URL)).toBe('builder-id')
+  })
+
+  it('rejects mixed credentials instead of choosing an endpoint for them', () => {
+    expect(() => resolveRefreshTokenOrigin('imported', true, undefined))
+      .toThrow(/takes no OIDC client id or secret/u)
+    expect(() => resolveRefreshTokenOrigin('builder-id', false, undefined))
+      .toThrow(/require their client id and client secret/u)
+    expect(() => resolveRefreshTokenOrigin('idc', true, undefined))
+      .toThrow(/require their start URL/u)
+  })
+
+  it('still refuses a half-supplied client credential pair', async () => {
+    await expect(importRefreshToken(
+      { refreshToken: 'token', clientId: 'client' },
+      vi.fn(),
+      new AbortController().signal,
+    )).rejects.toThrow(/must be provided together/u)
   })
 })

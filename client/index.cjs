@@ -40,6 +40,9 @@ window.__ModuleLoader__.load({
       google: 'Google',
       github: 'GitHub',
       refreshToken: 'Refresh token',
+      credentialSource: 'Credential source',
+      credentialSourceAuto: 'Detect automatically',
+      credentialSourceKiro: 'Kiro refresh token',
       apiKey: 'Kiro API key',
       externalIdp: 'Microsoft external IdP JSON',
       startUrl: 'Identity Center start URL',
@@ -57,6 +60,7 @@ window.__ModuleLoader__.load({
       refreshingUsage: 'Refreshing…',
       used: 'used',
       remaining: 'remaining',
+      unlimited: 'unlimited',
       resets: 'Resets',
       updated: 'Updated',
       models: 'Model selector',
@@ -108,6 +112,9 @@ window.__ModuleLoader__.load({
       google: 'Google',
       github: 'GitHub',
       refreshToken: '刷新令牌',
+      credentialSource: '凭据来源',
+      credentialSourceAuto: '自动判断',
+      credentialSourceKiro: 'Kiro 刷新令牌',
       apiKey: 'Kiro API 密钥',
       externalIdp: 'Microsoft 外部 IdP JSON',
       startUrl: 'Identity Center 起始 URL',
@@ -125,6 +132,7 @@ window.__ModuleLoader__.load({
       refreshingUsage: '刷新中…',
       used: '已使用',
       remaining: '剩余',
+      unlimited: '无上限',
       resets: '重置时间',
       updated: '更新时间',
       models: '模型选择器',
@@ -162,7 +170,17 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * Replace the settings-nav glyph for this plugin's section with the official
+     * Kiro mark.
+     *
+     * The settings shell picks nav icons from a fixed table keyed by section id
+     * and exposes no icon seat to registrants, so the glyph can only be adjusted
+     * in the DOM. Returns whether the icon is now in place, which is what lets
+     * the observer below stop working instead of scanning forever.
+     */
     function patchNavIcon() {
+      let installed = false
       for (const span of document.querySelectorAll('span')) {
         if (!span.textContent || span.textContent.trim() !== 'Kiro') continue
         const button = span.closest('button')
@@ -170,23 +188,82 @@ window.__ModuleLoader__.load({
         if (!svg) continue
         const body = svg.querySelector('path')
         if (svg.getAttribute('viewBox') === '0 0 1200 1200'
-          && body && body.getAttribute('d') === KIRO_BODY_PATH) continue
+          && body && body.getAttribute('d') === KIRO_BODY_PATH) {
+          installed = true
+          continue
+        }
         svg.setAttribute('viewBox', '0 0 1200 1200')
         svg.setAttribute('width', '16')
         svg.setAttribute('height', '16')
         svg.setAttribute('fill', 'none')
         svg.innerHTML = `<rect width="1200" height="1200" rx="260" fill="#9046FF"/><path d="${KIRO_BODY_PATH}" fill="white"/><path d="${KIRO_LEFT_EYE_PATH}" fill="black"/><path d="${KIRO_RIGHT_EYE_PATH}" fill="black"/>`
+        installed = true
       }
+      return installed
     }
 
-    function initNavObserver() {
-      patchNavIcon()
-      if (window.__kiroNavObserver) return
-      const observer = new MutationObserver(patchNavIcon)
-      observer.observe(document.documentElement || document.body, { childList: true, subtree: true })
-      window.addEventListener('click', patchNavIcon, true)
-      window.setInterval(patchNavIcon, 300)
-      window.__kiroNavObserver = observer
+    /** The nav element holding this plugin's settings row, when it is mounted. */
+    function navContainer() {
+      for (const span of document.querySelectorAll('span')) {
+        if (!span.textContent || span.textContent.trim() !== 'Kiro') continue
+        const button = span.closest('button')
+        const nav = button && button.closest('nav')
+        if (nav) return nav
+      }
+      return undefined
+    }
+
+    /**
+     * Keep the nav icon patched for as long as this plugin is loaded, without
+     * polling and without watching the whole document forever.
+     *
+     * Two observation scopes: the app root while the settings panel is closed
+     * (the panel mounts and unmounts, so its arrival has to be noticed
+     * somewhere), then the panel's own `nav` once the row exists. Re-arming the
+     * wide scope happens only when that nav leaves the document.
+     * @returns a disposer that stops all observation.
+     */
+    function installNavIcon() {
+      const root = document.getElementById('root') || document.body || document.documentElement
+      let observer
+      let scope
+      let scheduled = false
+      let disposed = false
+
+      const observe = (target) => {
+        if (disposed || !target || target === scope) return
+        if (observer) observer.disconnect()
+        scope = target
+        observer = new MutationObserver(schedule)
+        observer.observe(target, { childList: true, subtree: true })
+      }
+
+      const apply = () => {
+        scheduled = false
+        if (disposed) return
+        const installed = patchNavIcon()
+        const nav = navContainer()
+        // Narrow to the nav once it exists; widen again if it goes away, so a
+        // reopened panel is still picked up.
+        observe(installed && nav ? nav : root)
+      }
+
+      function schedule() {
+        if (disposed || scheduled) return
+        scheduled = true
+        const defer = typeof window.requestAnimationFrame === 'function'
+          ? window.requestAnimationFrame
+          : (callback) => window.setTimeout(callback, 0)
+        defer(apply)
+      }
+
+      apply()
+      return () => {
+        disposed = true
+        if (observer) observer.disconnect()
+        observer = undefined
+        scope = undefined
+      }
     }
 
     async function api(path, options) {
@@ -360,6 +437,9 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
                   clientId: fields.clientId,
                   clientSecret: fields.clientSecret,
                   startUrl: fields.startUrl,
+                  // Empty means "derive": Builder ID and Identity Center
+                  // credentials look alike, so the origin is stated, not guessed.
+                  credentialSource: fields.credentialSource,
                 }
               : activeMethod === 'api-key'
                 ? { method: activeMethod, apiKey: fields.apiKey, region: fields.region }
@@ -483,7 +563,15 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         className: `dshk-field${options.wide ? ' dshk-field-wide' : ''}`,
       },
       React.createElement('span', null, label),
-      options.textarea
+      options.choices
+        ? React.createElement('select', {
+            className: 'dshk-input',
+            value: fields[name] || options.choices[0].value,
+            onChange: (event) => updateField(name, event.target.value),
+          }, options.choices.map((choice) => React.createElement('option', {
+            key: choice.value, value: choice.value,
+          }, choice.label)))
+        : options.textarea
         ? React.createElement('textarea', {
             className: 'dshk-input',
             value: fields[name] || '',
@@ -509,6 +597,15 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
           : method === 'refresh-token'
             ? [
                 field('refreshToken', t('refreshToken'), { wide: true, textarea: true, secret: true }),
+                field('credentialSource', t('credentialSource'), {
+                  wide: true,
+                  choices: [
+                    { value: '', label: t('credentialSourceAuto') },
+                    { value: 'imported', label: t('credentialSourceKiro') },
+                    { value: 'builder-id', label: t('builderId') },
+                    { value: 'idc', label: t('idc') },
+                  ],
+                }),
                 field('profileArn', t('profileArn'), { wide: true, placeholder: 'arn:aws:codewhisperer:…:profile/…' }),
                 field('region', t('region'), { placeholder: 'us-east-1' }),
                 field('startUrl', t('startUrl'), { placeholder: 'https://example.awsapps.com/start' }),
@@ -634,9 +731,16 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
               React.createElement('div', { className: 'dshk-usage-top' },
                 React.createElement('span', { className: 'dshk-usage-name' }, row.label),
                 React.createElement('span', { className: 'dshk-usage-metric' },
-                  `${formatAmount(row.used)} / ${formatAmount(row.limit)} ${t('used')} · ${formatAmount(row.remainingPercent)}% ${t('remaining')}`)),
+                  row.unlimited
+                    // The plan reports no usable bound, so there is no percentage
+                    // to show: inventing one would misstate the account.
+                    ? `${formatAmount(row.used)} ${t('used')} · ${t('unlimited')}`
+                    : `${formatAmount(row.used)} / ${formatAmount(row.limit)} ${t('used')} · ${formatAmount(row.remainingPercent)}% ${t('remaining')}`)),
               React.createElement('div', { className: 'dshk-bar' },
-                React.createElement('div', { className: 'dshk-fill', style: { width: `${Math.max(0, Math.min(100, row.remainingPercent || 0))}%` } })),
+                React.createElement('div', {
+                  className: 'dshk-fill',
+                  style: { width: `${row.unlimited ? 100 : Math.max(0, Math.min(100, row.remainingPercent || 0))}%` },
+                })),
               React.createElement('div', { className: 'dshk-usage-foot' },
                 React.createElement('span', null, row.resetAt ? `${t('resets')} ${formatDate(row.resetAt)}` : ''),
                 React.createElement('span', null, `${t('updated')} ${formatDate(usage.fetchedAt)}`))))),
@@ -701,7 +805,14 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
       inject: ['slots', 'locale'],
       apply(ctx) {
         installStyle()
-        initNavObserver()
+        // The observer and its scope belong to this plugin's lifetime: an
+        // undisposed one keeps watching the DOM after an unload or reload.
+        if (typeof ctx.effect === 'function') {
+          ctx.effect(() => installNavIcon())
+        } else {
+          if (window.__kiroNavIconDispose) window.__kiroNavIconDispose()
+          window.__kiroNavIconDispose = installNavIcon()
+        }
         if (ctx.locale && typeof ctx.locale.register === 'function') ctx.locale.register(NS, { en, zh })
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',

@@ -67,6 +67,8 @@ Methods:
   --method idc --start-url URL    IAM Identity Center device login
   --method google|github          Google/GitHub device-code login
   --method refresh-token          Import KIRO_REFRESH_TOKEN or --refresh-token
+                                  Name its origin with --credential-source
+                                  builder-id|idc|imported; omitted derives it
   --method api-key                Import KIRO_API_KEY or --api-key
   --method external-idp           Import CLIProxyAPI JSON from --credentials-file
 
@@ -135,6 +137,9 @@ Common options:
       ...option('--client-id') === undefined ? {} : { clientId: option('--client-id') },
       ...option('--client-secret') === undefined ? {} : { clientSecret: option('--client-secret') },
       ...option('--start-url') === undefined ? {} : { startUrl: option('--start-url') },
+      ...option('--credential-source') === undefined
+        ? {}
+        : { authMethod: option('--credential-source') },
     }, requestJson, controller.signal)
   } else if (method === 'api-key') {
     credentials = await importApiKey(
