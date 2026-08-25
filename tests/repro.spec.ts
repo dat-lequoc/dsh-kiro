@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   CallId,
+  CONTEXT_WINDOW_EXCEEDED_CODE,
   createAssistantMessage,
   createToolResultMessage,
   createUserMessage,
@@ -354,6 +355,86 @@ describe('P1-2 provider stop reasons', () => {
         JSON.stringify({ message: 'slow down' }),
       ),
     )).rejects.toMatchObject({ code: 'throttlingException' })
+  })
+})
+
+describe('plugin boundary: the adapter never compacts', () => {
+  // As a plugin this owns the provider seam only. Deciding what a conversation
+  // should contain is `dsh-compaction-basic`'s job, driven by the token meter and
+  // by the overflow code this adapter reports. So the serializer may repair
+  // protocol shape — merge same-role runs, pad an alternation gap, carry an
+  // orphaned tool result as text — but it must never drop or condense content to
+  // make a request fit.
+
+  it('puts every message on the wire, whatever the conversation contains', () => {
+    const messages = [
+      user('first question'),
+      assistant('first answer', [{ id: 'call-1', name: 'run', args: '{"a":1}' }]),
+      toolResult('call-1', 'tool output one'),
+      assistant('second answer'),
+      user('second question'),
+      assistant('third answer', [{ id: 'call-2', name: 'run', args: '{"b":2}' }]),
+      toolResult('call-2', 'tool output two'),
+      user('third question'),
+    ]
+    // The whole body, because a matched tool result travels in the turn's
+    // `userInputMessageContext.toolResults` rather than in its content.
+    const wire = JSON.stringify(serialize(messages))
+    for (const fragment of [
+      'first question', 'first answer', 'tool output one', 'second answer',
+      'second question', 'third answer', 'tool output two', 'third question',
+    ]) {
+      expect(wire).toContain(fragment)
+    }
+  })
+
+  it('sends a conversation far larger than any context window in full', () => {
+    // The provider decides what is too large, and its refusal is what triggers
+    // the harness's recovery. Trimming here would hide that from the harness and
+    // silently discard turns it still believes it has.
+    const block = 'x'.repeat(50_000)
+    const messages = Array.from({ length: 40 }, (_, index) =>
+      index % 2 === 0 ? user(`${block}-u${index}`) : assistant(`${block}-a${index}`))
+    const request = serialize([...messages, user('final')])
+    const serialized = JSON.stringify(request)
+    expect(serialized.length).toBeGreaterThan(2_000_000)
+    for (const index of [0, 1, 20, 39]) {
+      expect(serialized).toContain(`-${index % 2 === 0 ? 'u' : 'a'}${index}`)
+    }
+    expect(wireTexts(request).length).toBeGreaterThanOrEqual(40)
+  })
+
+  it('keeps an orphaned tool result as text instead of discarding it', () => {
+    const request = serialize([user('go'), toolResult('call-gone', 'observation worth keeping')])
+    expect(wireTexts(request).join('\n')).toContain('observation worth keeping')
+  })
+
+  it('omits nothing but the marker this plugin itself authored', () => {
+    const request = serialize([
+      user('question'),
+      assistant(LEGACY_MARKER),
+      user('follow-up'),
+    ])
+    const wire = wireTexts(request).join('\n')
+    expect(wire).toContain('question')
+    expect(wire).toContain('follow-up')
+    expect(wire).not.toContain(LEGACY_MARKER)
+  })
+
+  it('reports the overflow and leaves recovery to the harness', () => {
+    // The adapter's whole contribution to recovery is this code. It does not
+    // retry, summarize, or edit the conversation: the compaction plugin owns that,
+    // and it keys on exactly this value.
+    expect(httpErrorCode(400, JSON.stringify({
+      message: 'Input is too long.',
+      reason: 'CONTENT_LENGTH_EXCEEDS_THRESHOLD',
+    }))).toBe(CONTEXT_WINDOW_EXCEEDED_CODE)
+  })
+
+  it('declares no dependency on any compaction or session service', async () => {
+    // A plugin that never compacts has no reason to inject the services that do.
+    const plugin = await import('../src/index.ts')
+    expect(plugin.inject).toEqual(['llm'])
   })
 })
 

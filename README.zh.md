@@ -151,6 +151,12 @@ llm-kiro:
 
 Kiro 没有独立 system 槽位，因此 harness system prompt 会放入最早的 user 轮次。历史会标准化为 Kiro 要求的 user/assistant 严格交替；工具 schema 随当前轮次发送；找不到对应调用的工具结果会降为文本，避免压缩后形成无效引用。
 
+### 本插件不做的事
+
+它永不执行压缩。作为适配器，它只负责上游协议这一层：会话应该包含什么由 `dsh-compaction-basic` 决定，依据 token meter 与本插件上报的溢出错误码。因此序列化只修复协议形状——合并同角色连续轮次、填补交替空缺、把孤立工具结果降为文本——但绝不为了让请求「装得下」而丢弃或压缩内容。超出模型窗口的会话会被完整发送，由上游拒绝，而这次拒绝正是 harness 启动恢复的信号。在本地裁剪会丢掉 harness 仍认为存在的轮次，也会掩盖触发压缩的溢出。
+
+唯一的例外是刻意且狭窄的：如果某个文本块的全部内容正是本插件早期自己发出的 `[system: conversation continues]` 填充语，重建历史时会将其丢弃，因为重放它会让模型学着复现该短语。该约束由「plugin boundary: the adapter never compacts」测试固定。
+
 响应为 `vnd.amazon.eventstream` 帧。适配器验证帧边界与 CRC，将原生 `reasoningContentEvent` 帧与旧式 `<thinking>` 内容转为 DSH reasoning block，保留文本、解码工具调用，并过滤已知的开放权重提示词格式残留。
 
 终端 `metadataEvent` 提供结束原因：`END_TURN`、`TOOL_USE`、`MAX_TOKENS`、`MODEL_CONTEXT_WINDOW_EXCEEDED`、`CONTENT_FILTERED`、`PAUSE_TURN` 分别映射到对应的 DSH 结果；无法识别的原因会以可诊断的错误码结束该轮，而不是伪装成成功。

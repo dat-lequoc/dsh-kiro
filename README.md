@@ -158,6 +158,12 @@ Do not wrap this override in `insert:`; the bundle already inserts `llm-kiro`.
 
 Kiro has no separate system slot, so the harness system prompt is placed on the earliest user turn. Conversation history is normalized to Kiro's strict user/assistant alternation, tool schemas are attached to the current turn, and orphaned tool results are carried as text so compaction cannot leave an invalid tool-call reference.
 
+### What this plugin does not do
+
+It never compacts. As an adapter it owns the provider seam and nothing else: deciding what a conversation should contain belongs to `dsh-compaction-basic`, driven by the token meter and by the overflow code reported here. So the serializer repairs protocol shape — merging same-role runs, padding an alternation gap, carrying an orphaned tool result as text — but it never drops or condenses content to make a request fit. A conversation larger than the model's window is sent in full, the provider refuses it, and that refusal is what starts the harness's recovery. Trimming locally would discard turns the harness still believes it has, and would hide the overflow that triggers compaction.
+
+The single exception is deliberate and narrow: a text block whose entire content is the legacy `[system: conversation continues]` padding this plugin itself once emitted is dropped when history is rebuilt, because replaying it teaches the model to reproduce it. That invariant is pinned by the "plugin boundary: the adapter never compacts" tests.
+
 Responses arrive as `vnd.amazon.eventstream` frames. The adapter validates frame boundaries and CRCs, routes native `reasoningContentEvent` frames and legacy `<thinking>` runs into DSH reasoning blocks, preserves text blocks, decodes tool calls, and suppresses known open-weight prompt-format artifacts.
 
 The terminal `metadataEvent` supplies the finish reason: `END_TURN`, `TOOL_USE`, `MAX_TOKENS`, `MODEL_CONTEXT_WINDOW_EXCEEDED`, `CONTENT_FILTERED`, and `PAUSE_TURN` map to the matching DSH outcome, and an unrecognized reason fails the turn with a diagnosable code instead of reporting success.
