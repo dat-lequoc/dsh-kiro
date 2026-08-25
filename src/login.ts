@@ -462,13 +462,23 @@ export async function importRefreshToken(
   }
 }
 
+/**
+ * What a live credential check actually proved, so the UI can say so rather than
+ * report a bare success for something it only stored.
+ */
+export interface VerifiedImport {
+  credentials: ManagedCredentials
+  /** Models the validating catalog call returned; the evidence the key works. */
+  models: number
+}
+
 /** Validate a long-lived Kiro API key against its actual model catalog. */
 export async function importApiKey(
   apiKey: string,
   regionValue: string | undefined,
   requestGet: LoginGetTransport,
   signal: AbortSignal,
-): Promise<ManagedCredentials> {
+): Promise<VerifiedImport> {
   const accessToken = apiKey.trim()
   if (accessToken.length === 0) throw new Error('Kiro API key is required')
   const region = assertKiroRegion(regionValue?.trim() || 'us-east-1')
@@ -485,10 +495,13 @@ export async function importApiKey(
     throw new Error('Kiro API key validation failed')
   }
   return {
-    accessToken,
-    expiresAt: new Date(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000).toISOString(),
-    region,
-    authMethod: 'api_key',
+    credentials: {
+      accessToken,
+      expiresAt: new Date(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000).toISOString(),
+      region,
+      authMethod: 'api_key',
+    },
+    models: models.length,
   }
 }
 

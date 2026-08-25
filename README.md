@@ -53,6 +53,7 @@ Open **Settings → Kiro** and select a method:
 - **IAM Identity Center** uses a device flow with your `https://<company>.awsapps.com/start` URL and region.
 - **Google / GitHub** uses Kiro's social device flow. The page shows a one-time `XXXX-XXXX` code and an `app.kiro.dev/account/device` authorization URL while the plugin waits for completion.
 - **Refresh token**, **Kiro API key**, and **Microsoft external IdP JSON** validate/import an existing credential without exposing it back to the browser status API.
+- An import reports what it actually verified: an API key is checked against the live model catalog first, so the page can say `Credential verified · 19 models available`. A refresh token reports verification because the exchange minted a real access token; external-IdP JSON is only reshaped locally, so it says `Credentials saved` rather than claiming a check that never happened. On success the dialog closes, the pasted secret is dropped from the page, and the usage card is re-read for the account that now applies.
 
 After an OAuth login, the plugin queries `ListAvailableProfiles`, saves the selected profile ARN with its managed credential, and uses the ARN's region for inference.
 

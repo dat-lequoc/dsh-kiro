@@ -60,6 +60,9 @@ window.__ModuleLoader__.load({
       usage: 'Usage',
       refreshUsage: 'Refresh usage',
       refreshingUsage: 'Refreshing…',
+      verified: 'Credential verified',
+      verifiedModels: 'models available',
+      savedCredential: 'Credentials saved',
       used: 'used',
       remaining: 'remaining',
       unlimited: 'unlimited',
@@ -134,6 +137,9 @@ window.__ModuleLoader__.load({
       usage: '使用量',
       refreshUsage: '刷新使用量',
       refreshingUsage: '刷新中…',
+      verified: '凭据已验证',
+      verifiedModels: '个模型可用',
+      savedCredential: '凭据已保存',
       used: '已使用',
       remaining: '剩余',
       unlimited: '无上限',
@@ -324,9 +330,10 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
 .dshk-model-tools{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.dshk-link-btn{padding:0;border:0;background:transparent;color:#6d28d9;font:inherit;font-size:11px;cursor:pointer}.dshk-link-btn:hover{text-decoration:underline}.dshk-link-btn:disabled{cursor:not-allowed;opacity:.5}.dshk-selected-count{color:#94a3b8;font-size:11px}
 .dshk-list{display:grid;gap:5px}.dshk-model{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border:1px solid #eef0f3;border-radius:9px;background:#fcfcfd;cursor:pointer}.dshk-model:hover{border-color:#c4b5fd;background:#faf8ff}.dshk-model-off{opacity:.68}.dshk-check{width:15px;height:15px;margin:2px 0 0;accent-color:#7c3aed;flex:none}.dshk-model-text{display:grid;min-width:0;gap:2px}.dshk-model-name{font-size:13px;font-weight:650}.dshk-model-sub{overflow:hidden;color:#6b7280;font-size:10.5px;line-height:15px;text-overflow:ellipsis;white-space:nowrap}
 .dshk-error{margin-top:10px;padding:9px 11px;border-radius:9px;background:#fef2f2;color:#b91c1c;font-size:12px;white-space:pre-wrap}
+.dshk-notice{margin-top:10px;padding:9px 11px;border-radius:9px;background:#f0fdf4;color:#15803d;font-size:12px}
 .dshk-empty{padding:18px;text-align:center;color:#9ca3af;font-size:13px}
 @media(max-width:620px){.dshk-grid{grid-template-columns:1fr}.dshk-field-wide{grid-column:auto}.dshk-auth-url-row{align-items:stretch;flex-direction:column}.dshk-head{align-items:flex-start;flex-direction:column}.dshk-usage-top{align-items:flex-start;flex-direction:column;gap:2px}.dshk-usage-metric{text-align:left}.dshk-model-sub{white-space:normal}}
-@media(prefers-color-scheme:dark){.dshk-wrap{color:#f3f4f6}.dshk-card,.dshk-modal{border-color:#303642;background:#171a21}.dshk-modal-head{border-color:#303642}.dshk-status,.dshk-model{background:#1d2129;border-color:#303642;color:#d1d5db}.dshk-model:hover{border-color:#8b5cf6;background:#282333}.dshk-btn,.dshk-input,.dshk-method{border-color:#434b59;background:#20242d;color:#f3f4f6}.dshk-method:hover{border-color:#8b5cf6;background:#282333}.dshk-method-icon{background:#332a52;color:#c4b5fd}.dshk-close:hover{background:#272c35}.dshk-form,.dshk-usage{border-color:#303642}.dshk-field{color:#d1d5db}.dshk-code{border-color:#4338ca;background:#272447;color:#c7d2fe}.dshk-bar{background:#303642}.dshk-plan{background:#332a52;color:#c4b5fd}.dshk-link-btn{color:#c4b5fd}}
+@media(prefers-color-scheme:dark){.dshk-notice{background:#0f2a1a;color:#86efac}.dshk-wrap{color:#f3f4f6}.dshk-card,.dshk-modal{border-color:#303642;background:#171a21}.dshk-modal-head{border-color:#303642}.dshk-status,.dshk-model{background:#1d2129;border-color:#303642;color:#d1d5db}.dshk-model:hover{border-color:#8b5cf6;background:#282333}.dshk-btn,.dshk-input,.dshk-method{border-color:#434b59;background:#20242d;color:#f3f4f6}.dshk-method:hover{border-color:#8b5cf6;background:#282333}.dshk-method-icon{background:#332a52;color:#c4b5fd}.dshk-close:hover{background:#272c35}.dshk-form,.dshk-usage{border-color:#303642}.dshk-field{color:#d1d5db}.dshk-code{border-color:#4338ca;background:#272447;color:#c7d2fe}.dshk-bar{background:#303642}.dshk-plan{background:#332a52;color:#c4b5fd}.dshk-link-btn{color:#c4b5fd}}
 `
       document.head.appendChild(style)
     }
@@ -384,6 +391,7 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
       const [copiedAuthUrl, setCopiedAuthUrl] = useState(false)
       const [usage, setUsage] = useState(undefined)
       const [usageError, setUsageError] = useState('')
+      const [notice, setNotice] = useState('')
 
       const updateField = useCallback((name, value) => {
         setFields((current) => ({ ...current, [name]: value }))
@@ -406,25 +414,56 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         return () => { active = false; window.clearInterval(timer) }
       }, [load, status?.login?.status])
 
-      useEffect(() => {
-        if (!status?.authenticated) return
-        setAuthOpen(false)
-        setSelectedMethod(null)
-      }, [status?.authenticated])
+      // Which credential is in force, not merely whether one is. Signing in from
+      // a signed-out page changes `authenticated`, but importing a key while a
+      // Kiro IDE credential is already present does not — and that is exactly
+      // when the dialog must close and the usage card must be re-read.
+      const credentialKey = status?.authenticated
+        ? [status.credentialSource, status.authMethod, status.expiresAt].join('|')
+        : ''
 
       useEffect(() => {
-        if (!status?.authenticated) {
+        if (credentialKey === '') return
+        setAuthOpen(false)
+        setSelectedMethod(null)
+      }, [credentialKey])
+
+      useEffect(() => {
+        if (credentialKey === '') {
           setUsage(undefined)
           setUsageError('')
           return undefined
         }
         let active = true
-        if (status.usage) setUsage(status.usage)
+        if (status?.usage) setUsage(status.usage)
         void api('/usage').then((value) => {
           if (active) { setUsage(value); setUsageError('') }
         }).catch((cause) => { if (active) setUsageError(cause.message) })
         return () => { active = false }
-      }, [status?.authenticated])
+      }, [credentialKey])
+
+      useEffect(() => {
+        if (notice === '') return undefined
+        // A confirmation is news, not state: it clears itself rather than
+        // lingering over a page the user has moved on from.
+        const timer = window.setTimeout(() => setNotice(''), 8000)
+        return () => window.clearTimeout(timer)
+      }, [notice])
+
+      const noticeFor = useCallback((next) => {
+        const models = next?.verified?.models
+        if (typeof models === 'number') return `${t('verified')} · ${models} ${t('verifiedModels')}`
+        if (next?.verified?.refreshed) return t('verified')
+        // Nothing was checked on the wire for this method, so the message says
+        // only what happened: it was saved.
+        return t('savedCredential')
+      }, [t])
+
+      const refreshUsage = useCallback(async () => {
+        setBusy('usage'); setUsageError('')
+        try { setUsage(await api('/usage', { method: 'POST' })) }
+        catch (cause) { setUsageError(cause.message) } finally { setBusy('') }
+      }, [])
 
       const login = useCallback(async (requestedMethod) => {
         const activeMethod = typeof requestedMethod === 'string' ? requestedMethod : method
@@ -448,7 +487,24 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
               : activeMethod === 'api-key'
                 ? { method: activeMethod, apiKey: fields.apiKey, region: fields.region }
                 : { method: activeMethod, credentials: fields.credentials }
-            setStatus(await api('/credentials/import', { method: 'POST', body: JSON.stringify(payload) }))
+            const next = await api('/credentials/import', { method: 'POST', body: JSON.stringify(payload) })
+            setStatus(next)
+            // Close and confirm here rather than waiting on a derived state
+            // change: re-importing the same kind of credential can leave every
+            // observed field identical, and the dialog must still close.
+            setAuthOpen(false)
+            setSelectedMethod(null)
+            // The secret has been stored server-side; keeping a copy in the page
+            // only widens where it can leak.
+            setFields((current) => ({
+              ...current,
+              apiKey: '',
+              refreshToken: '',
+              clientSecret: '',
+              credentials: '',
+            }))
+            setNotice(noticeFor(next))
+            await refreshUsage()
             return
           }
           const flow = await api('/login', {
@@ -458,7 +514,7 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
           setStatus((current) => ({ ...current, login: flow }))
           await load()
         } catch (cause) { setError(cause.message) } finally { setBusy('') }
-      }, [fields, load, method])
+      }, [fields, load, method, noticeFor, refreshUsage])
 
       const chooseMethod = useCallback((nextMethod) => {
         setMethod(nextMethod)
@@ -533,12 +589,6 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
           const models = await api('/models/refresh', { method: 'POST' })
           setStatus((current) => ({ ...current, models }))
         } catch (cause) { setError(cause.message) } finally { setBusy('') }
-      }, [])
-
-      const refreshUsage = useCallback(async () => {
-        setBusy('usage'); setUsageError('')
-        try { setUsage(await api('/usage', { method: 'POST' })) }
-        catch (cause) { setUsageError(cause.message) } finally { setBusy('') }
       }, [])
 
       const saveModels = useCallback(async (enabledModelIds) => {
@@ -751,6 +801,7 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
               React.createElement('div', { className: 'dshk-usage-foot' },
                 React.createElement('span', null, row.resetAt ? `${t('resets')} ${formatDate(row.resetAt)}` : ''),
                 React.createElement('span', null, `${t('updated')} ${formatDate(usage.fetchedAt)}`))))),
+          notice && React.createElement('div', { className: 'dshk-notice', role: 'status' }, notice),
           usageError && React.createElement('div', { className: 'dshk-error' }, usageError),
           error && React.createElement('div', { className: 'dshk-error' }, error)),
         React.createElement('section', { className: 'dshk-card' },

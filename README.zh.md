@@ -16,6 +16,7 @@
 
 - 在 **Settings → Kiro** 中使用 AWS Builder ID、IAM Identity Center、Google 或 GitHub 登录。
 - 导入 Kiro refresh token、API key 或兼容 CLIProxyAPI 的 Microsoft external-IdP 凭据。
+- 导入会报告实际验证到的内容：API key 先与线上模型目录校验，因此页面可以显示`凭据已验证 · 19 个模型可用`；refresh token 因为换取到了真实 access token 而同样报告已验证；external-IdP JSON 只在本地做格式转换，因此显示`凭据已保存`，不会声称做过并不存在的校验。成功后对话框自动关闭，页面上粘贴的密钥被清除，并按当前生效的账号重新读取使用量卡片。
 - 使用随包提供的 `kiro-login` 命令从终端完成同类登录。
 - 自动发现并保存账号的 CodeWhisperer profile ARN，使刷新后的 token 仍使用正确 profile。
 - 没有插件自管登录时，自动回退到 Kiro IDE/CLI 的 `~/.aws/sso/cache` 凭据。

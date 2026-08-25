@@ -107,8 +107,17 @@ export declare function importRefreshToken(input: {
     /** Explicit credential origin; omitted falls back to derivation. */
     authMethod?: RefreshTokenOrigin;
 }, requestJson: LoginJsonTransport, signal: AbortSignal): Promise<ManagedCredentials>;
+/**
+ * What a live credential check actually proved, so the UI can say so rather than
+ * report a bare success for something it only stored.
+ */
+export interface VerifiedImport {
+    credentials: ManagedCredentials;
+    /** Models the validating catalog call returned; the evidence the key works. */
+    models: number;
+}
 /** Validate a long-lived Kiro API key against its actual model catalog. */
-export declare function importApiKey(apiKey: string, regionValue: string | undefined, requestGet: LoginGetTransport, signal: AbortSignal): Promise<ManagedCredentials>;
+export declare function importApiKey(apiKey: string, regionValue: string | undefined, requestGet: LoginGetTransport, signal: AbortSignal): Promise<VerifiedImport>;
 /** Convert CLIProxyAPI-compatible Microsoft external-IdP JSON into managed credentials. */
 export declare function importExternalIdp(raw: unknown): ManagedCredentials;
 /** Save any normalized credential beneath DSH home with private permissions. */

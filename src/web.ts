@@ -330,6 +330,9 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     const signal = AbortSignal.timeout(30_000)
     const method = requiredText(body.method, 'Kiro import method')
     let credentials: ManagedCredentials
+    // What the import proved on the wire, so the page can confirm the credential
+    // works instead of only reporting that it was stored.
+    let verified: { models?: number; refreshed?: true } | undefined
     if (method === 'refresh-token') {
       const region = optionalText(body.region) ?? connection.region
       const profileArn = optionalText(body.profileArn)
@@ -351,13 +354,17 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
         (url, value, requestSignal) => postJson(url, value, connection.proxyUrl, requestSignal),
         signal,
       )
+      // The exchange minted a live access token, which is itself the proof.
+      verified = { refreshed: true }
     } else if (method === 'api-key') {
-      credentials = await importApiKey(
+      const checked = await importApiKey(
         requiredText(body.apiKey, 'Kiro API key'),
         optionalText(body.region) ?? connection.region,
         (url, headers, requestSignal) => getJson(url, headers, connection.proxyUrl, requestSignal),
         signal,
       )
+      credentials = checked.credentials
+      verified = { models: checked.models }
     } else if (method === 'external-idp') {
       credentials = importExternalIdp(body.credentials)
     } else {
@@ -365,7 +372,10 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     }
     await save(credentials, signal)
     login = undefined
-    return status()
+    const current = await status() as Record<string, unknown>
+    // External-IdP JSON is only reshaped locally, so it reports no verification:
+    // claiming one would be a success the plugin never observed.
+    return verified === undefined ? current : { ...current, verified }
   }
 
   ctx.inject(['webServer'], (webCtx) => {

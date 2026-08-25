@@ -263,8 +263,13 @@ describe('additional Kiro auth methods', () => {
       status: 200,
       body: { models: [{ modelId: 'claude-sonnet' }] },
     })
+    // The import now reports what it verified alongside the credential, so the
+    // page can confirm the key works rather than only that it was stored.
     await expect(importApiKey(' api-key ', 'us-west-2', request, new AbortController().signal))
-      .resolves.toMatchObject({ accessToken: 'api-key', authMethod: 'api_key', region: 'us-west-2' })
+      .resolves.toMatchObject({
+        credentials: { accessToken: 'api-key', authMethod: 'api_key', region: 'us-west-2' },
+        models: 1,
+      })
     expect(request.mock.calls[0]?.[0]).toContain('https://q.us-west-2.amazonaws.com/ListAvailableModels')
     expect(request.mock.calls[0]?.[1]).toMatchObject({ TokenType: 'API_KEY' })
   })
