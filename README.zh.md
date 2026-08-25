@@ -24,6 +24,7 @@
 - 显示账号套餐、credits 使用量和重置日期，并提供紧凑、可持久化的模型启用列表。
 - 自动发现每个模型的 reasoning effort，包括 Kiro 提供的 `none`、`xhigh` 与 `max`。
 - 解码 Kiro Amazon EventStream 中的文本、推理与工具调用。
+- 向目录声明接受图片的所有模型发送图片，从而启用图片附件与 harness 自带的读图工具。
 - 支持直连或带认证的 HTTP/HTTPS `CONNECT` 代理。
 - `llm-kiro` 设置无需重启即可热更新。
 
