@@ -529,18 +529,37 @@ describe('account allowance classification', () => {
     }))).toBe('QUOTA')
   })
 
-  it('maps a credit-rate 403 to quota but keeps other 403s forbidden', () => {
-    expect(httpErrorCode(403, JSON.stringify({ reason: 'CREDIT_CONSUMPTION_RATE_EXCEEDED' })))
+  it('maps an overage allowance on a 403 to quota but keeps other 403s forbidden', () => {
+    expect(httpErrorCode(403, JSON.stringify({ reason: 'OVERAGE_REQUEST_LIMIT_EXCEEDED' })))
       .toBe('QUOTA')
     expect(httpErrorCode(403, JSON.stringify({ message: 'not entitled' }))).toBe('FORBIDDEN')
     expect(httpErrorCode(403, 'expired bearer token')).toBe('AUTH')
   })
 
-  it('separates a burst throttle from a spent monthly allowance', () => {
-    expect(httpErrorCode(429, JSON.stringify({ reason: 'USER_REQUEST_RATE_EXCEEDED' })))
-      .toBe('RATE_LIMIT')
-    expect(httpErrorCode(429, JSON.stringify({ reason: 'MONTHLY_REQUEST_COUNT' })))
-      .toBe('QUOTA')
+  it('keeps every rate reason a rate limit, including the credit burn rate', () => {
+    // The service model's ThrottlingExceptionReason vocabulary: only the counted
+    // allowances are a spent plan, the rest are transient and keep their backoff.
+    for (const reason of [
+      'USER_REQUEST_RATE_EXCEEDED',
+      'SERVICE_REQUEST_RATE_EXCEEDED',
+      'INSUFFICIENT_MODEL_CAPACITY',
+      'CREDIT_CONSUMPTION_RATE_EXCEEDED',
+    ]) {
+      expect(httpErrorCode(429, JSON.stringify({ reason }))).toBe('RATE_LIMIT')
+    }
+    for (const reason of ['MONTHLY_REQUEST_COUNT', 'DAILY_REQUEST_COUNT']) {
+      expect(httpErrorCode(429, JSON.stringify({ reason }))).toBe('QUOTA')
+    }
+  })
+
+  it('asks the harness to shrink a conversation the service will not extend', () => {
+    // CONVERSATION_LIMIT_EXCEEDED is a ServiceQuotaExceeded reason, but the only
+    // lever the harness has is a smaller conversation, so it reads as overflow —
+    // whichever status the service attaches it to.
+    for (const status of [400, 402, 429]) {
+      expect(httpErrorCode(status, JSON.stringify({ reason: 'CONVERSATION_LIMIT_EXCEEDED' })))
+        .toBe(CONTEXT_WINDOW_EXCEEDED_CODE)
+    }
   })
 })
 

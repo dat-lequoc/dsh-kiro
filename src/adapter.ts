@@ -66,16 +66,31 @@ const CONTEXT_OVERFLOW_REASON = 'CONTENT_LENGTH_EXCEEDS_THRESHOLD'
  */
 const CONTEXT_OVERFLOW_MESSAGES = ['input is too long', 'prompt is too long'] as const
 /**
- * Kiro's own reasons for an allowance that is spent rather than throttled. The
- * request-count and monthly reasons come from its `ThrottlingExceptionReason`
- * vocabulary; a 402 carries them too.
+ * Reasons that mean an allowance is spent rather than momentarily throttled,
+ * taken from the service model's own enums rather than guessed:
+ * `ThrottlingExceptionReason` is CREDIT_CONSUMPTION_RATE_EXCEEDED,
+ * DAILY_REQUEST_COUNT, INSUFFICIENT_MODEL_CAPACITY, MONTHLY_REQUEST_COUNT,
+ * SERVICE_REQUEST_RATE_EXCEEDED, USER_REQUEST_RATE_EXCEEDED; and
+ * `ServiceQuotaExceededExceptionReason` is CONVERSATION_LIMIT_EXCEEDED,
+ * MONTHLY_REQUEST_COUNT, OVERAGE_REQUEST_LIMIT_EXCEEDED.
+ *
+ * Only the counted allowances belong here. The three rate reasons and
+ * INSUFFICIENT_MODEL_CAPACITY name something transient, so they stay a rate
+ * limit and keep their backoff — including CREDIT_CONSUMPTION_RATE_EXCEEDED,
+ * which is a burn rate in the throttling vocabulary, not an empty balance.
  */
 const QUOTA_REASONS = [
   'MONTHLY_REQUEST_COUNT',
   'DAILY_REQUEST_COUNT',
-  'CREDIT_CONSUMPTION_RATE_EXCEEDED',
-  'FREE_TIER_LIMIT_REACHED',
+  'OVERAGE_REQUEST_LIMIT_EXCEEDED',
 ] as const
+/**
+ * A conversation the service will not extend further. The harness's only lever
+ * is to make the conversation smaller, which is what the overflow code asks for,
+ * so it is reported as overflow rather than as an opaque quota failure. Inferred
+ * from the enum; not yet observed live.
+ */
+const CONVERSATION_LIMIT_REASON = 'CONVERSATION_LIMIT_EXCEEDED'
 
 /** Location of Kiro's native effort field in `additionalModelRequestFields`. */
 export type KiroEffortSchemaPath = 'output_config' | 'reasoning'
@@ -208,7 +223,7 @@ function modelInfo(provider: string, model: KiroCatalogModel): LlmModelInfo {
  */
 export function isKiroContextOverflow(body?: string): boolean {
   if (body === undefined || body.length === 0) return false
-  if (body.includes(CONTEXT_OVERFLOW_REASON)) return true
+  if (body.includes(CONTEXT_OVERFLOW_REASON) || body.includes(CONVERSATION_LIMIT_REASON)) return true
   const normalized = body.toLowerCase()
   return CONTEXT_OVERFLOW_MESSAGES.some(phrase => normalized.includes(phrase))
     || isContextWindowExceededError(body)
@@ -223,6 +238,7 @@ export function isKiroContextOverflow(body?: string): boolean {
  */
 export function isKiroQuotaExhausted(body?: string): boolean {
   if (body === undefined || body.length === 0) return false
+  if (body.includes(CONVERSATION_LIMIT_REASON)) return false
   return QUOTA_REASONS.some(reason => body.includes(reason)) || isQuotaExceededError(body)
 }
 
@@ -246,17 +262,19 @@ export function httpErrorCode(status: number, body?: string): string {
   // MONTHLY_REQUEST_COUNT or CREDIT_CONSUMPTION_RATE_EXCEEDED. That is a spent
   // allowance, not a transient rate limit: retrying cannot help, and DSH has a
   // canonical code so surfaces can say so instead of showing `HTTP_402`.
+  // Checked ahead of the status branches: the reason strings are unambiguous,
+  // and the service uses more than one status for the same condition. Compaction's
+  // emergency recovery is keyed to this exact code, so an overflow reported as
+  // anything else silently ends the turn instead.
+  if (isKiroContextOverflow(body)) return CONTEXT_WINDOW_EXCEEDED_CODE
   if (status === 402) return QUOTA_EXCEEDED_CODE
   if (status === 429) {
-    // A throttle whose reason names the monthly or daily allowance is the plan
-    // running out, not a burst to back off from.
+    // A throttle whose reason names a counted allowance is the plan running out,
+    // not a burst to back off from.
     return isKiroQuotaExhausted(body) ? QUOTA_EXCEEDED_CODE : 'RATE_LIMIT'
   }
   if (status === 400) {
     if (body !== undefined && body.includes('INVALID_MODEL_ID')) return 'INVALID_MODEL'
-    // Compaction's emergency recovery is keyed to this exact code, so an
-    // overflow reported as INVALID_REQUEST silently ends the turn instead.
-    if (isKiroContextOverflow(body)) return CONTEXT_WINDOW_EXCEEDED_CODE
     return 'INVALID_REQUEST'
   }
   if (status >= 500) return 'SERVER'

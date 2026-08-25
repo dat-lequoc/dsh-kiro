@@ -190,6 +190,10 @@ Kiro does not send `tokenUsage` on every route — no observed request on this a
 
 What that number is and is not: the input side is the provider's own measurement, at the precision the provider reported it, of how full the window is — not an exact per-request count. The output side has no provider signal at all and is scaled from the characters the stream emitted. Cache buckets are never invented; they appear only when Kiro reports them.
 
+Cache buckets appear only when Kiro reports them, which no observed route does — so DSH shows `Cache hit 0%`, and that reads as "not reported" rather than "nothing was cached". Caching demonstrably happens: repeating a request with the same long prefix costs 0.0417 credits against 0.0787 for the first, a 47% reduction. Kiro does it server-side and keys it on the prefix, so resending history across a turn loop already benefits. The service simply does not send `cacheReadInputTokens`, and the adapter will not invent it.
+
+Sending `cachePoint: {type: 'default'}` — which the service model declares on `UserInputMessage`, `AssistantResponseMessage`, and as a `Tool` union arm — is accepted but changes nothing: cold and warm credit costs are identical to 17 significant digits with and without it. `tests/live-cache.spec.ts` is that experiment, kept so the answer can be rechecked rather than reasoned about.
+
 Account credit usage on the settings card is a separate, plan-level figure and is never converted into per-request token counts.
 
 ## Why some Claude routes need a proxy
