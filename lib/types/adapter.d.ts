@@ -8,7 +8,8 @@
  * @module dsh-kiro/adapter
  */
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
-import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, ResolvedRetryPolicy, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, ModelModality, ResolvedRetryPolicy, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment';
 import type { RequestDefaults } from './serialize.ts';
 import type { KiroToken } from './auth.ts';
 /** Default maximum idle interval while an outstanding provider read is pending. */
@@ -31,6 +32,13 @@ export interface KiroCatalogModel {
     maxTokens?: number;
     /** Whether this model honors the thinking markers. */
     thinking?: boolean;
+    /**
+     * Request modalities this model accepts, from the catalog's own
+     * `supportedInputTypes`. Absent means text only, matching the harness rule
+     * that an explicit omission is negative capability: a model whose capability
+     * nobody stated must not be sent images.
+     */
+    inputModalities?: ModelModality[];
     /** Exact effort ids advertised by this account's live model schema. */
     reasoningEfforts?: string[];
     /** Provider-selected effort for this model. */
@@ -95,6 +103,23 @@ export interface KiroAdapterOptions {
     currentModels?: (connection: KiroConnectionOptions) => readonly KiroCatalogModel[] | undefined;
     /** Apply the plugin-owned enabled-model selection before publishing the catalog. */
     selectModels?: (models: readonly KiroCatalogModel[]) => Promise<readonly KiroCatalogModel[]>;
+    /**
+     * Reach the attachment store that owns image bytes, resolved per request so a
+     * profile without it simply has no images rather than failing to load. Image
+     * blocks carry a reference, never the bytes, so this is the only way to send
+     * one upstream.
+     */
+    resolveAttachments?: () => AttachmentStore | undefined;
+}
+/** The attachment-store surface this adapter uses: one call, by reference. */
+export interface AttachmentStore {
+    readImageRequest: (ref: ImageAttachmentRef, policy: {
+        maxPixels: number;
+        maxBytes: number;
+    }, signal?: AbortSignal) => Promise<{
+        data: Uint8Array;
+        mediaType: ImageMediaType;
+    }>;
 }
 /** Select the auth-specific upstream surface Kiro accepts. */
 export declare function kiroRequestEndpoint(token: KiroToken, region: string): string;

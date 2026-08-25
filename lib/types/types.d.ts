@@ -35,12 +35,30 @@ export interface WireUserInputMessageContext {
     tools?: WireTool[];
     toolResults?: WireToolResult[];
 }
+/**
+ * One raster image on a user turn. The service model declares
+ * `ImageBlock { format, source }` with `ImageFormat` limited to gif, jpeg, png
+ * and webp, and `ImageSource` a union whose only member is a `bytes` blob —
+ * base64 on the JSON wire.
+ */
+export interface WireImageBlock {
+    format: 'gif' | 'jpeg' | 'png' | 'webp';
+    source: {
+        bytes: string;
+    };
+}
 /** A user turn. `modelId` repeats on every turn, as the service requires. */
 export interface WireUserInputMessage {
     content: string;
     modelId: string;
     origin: string;
     userInputMessageContext?: WireUserInputMessageContext;
+    /**
+     * Images accompanying this turn. Only user messages have this seat: the
+     * service's `ToolResultContentBlock` is a union of text and json alone, so an
+     * image produced by a tool has nowhere of its own to go.
+     */
+    images?: WireImageBlock[];
 }
 /** An assistant turn replayed in history. */
 export interface WireAssistantResponseMessage {

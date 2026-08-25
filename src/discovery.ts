@@ -1,6 +1,7 @@
 /** Live Kiro model discovery through ListAvailableModels. */
 
 import { LlmError } from '@deepseek-ai/dsh-llm'
+import type { ModelModality } from '@deepseek-ai/dsh-llm'
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import type { KiroAuthMethod, KiroToken } from './auth.ts'
 import { assertKiroProfileArn } from './profile.ts'
@@ -30,6 +31,33 @@ interface WireModel {
   supportedInputTypes?: unknown
   tokenLimits?: unknown
   additionalModelRequestFieldsSchema?: unknown
+}
+
+/**
+ * Modalities in the order selectors should show them. Fixed rather than taken
+ * from the wire so one account's ordering cannot become a UI difference.
+ */
+const MODALITY_ORDER = ['text', 'image'] as const
+
+/**
+ * Read the input modalities a catalog entry declares.
+ *
+ * The service states this per model as `supportedInputTypes: ["TEXT","IMAGE"]`,
+ * so the capability is read rather than inferred from the model id: on this
+ * account 17 of 19 models accept images while `glm-5` and `minimax-m2.5` accept
+ * only text, and an id-based guess would send images to a model that refuses
+ * them. An unreadable value yields absence, which leaves the configured default
+ * in force instead of silently narrowing the model to text.
+ * @param value - the raw `supportedInputTypes` member.
+ * @returns declared modalities in display order, or undefined when unreadable.
+ */
+export function parseInputModalities(value: unknown): ModelModality[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const declared = new Set(value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map(entry => entry.trim().toLowerCase()))
+  const modalities = MODALITY_ORDER.filter(modality => declared.has(modality))
+  return modalities.length === 0 ? undefined : [...modalities]
 }
 
 /** Request hook used to test discovery without network access. */
@@ -227,6 +255,7 @@ function parseModelPage(body: unknown): KiroCatalogModel[] {
     const limits = record(model.tokenLimits) as WireTokenLimits | undefined
     const contextWindow = positiveInteger(limits?.maxInputTokens)
     const maxTokens = positiveInteger(limits?.maxOutputTokens)
+    const inputModalities = parseInputModalities(model.supportedInputTypes)
     const effort = parseEffortSchema(model.additionalModelRequestFieldsSchema)
     const maxTokensBounds = parseMaxTokensBounds(model.additionalModelRequestFieldsSchema)
     const hasEffortSchema = rawModel !== undefined
@@ -239,6 +268,7 @@ function parseModelPage(body: unknown): KiroCatalogModel[] {
         : {},
       ...contextWindow === undefined ? {} : { contextWindow },
       ...maxTokens === undefined ? {} : { maxTokens },
+      ...inputModalities === undefined ? {} : { inputModalities },
       thinking: hasEffortSchema ? effort !== undefined : modelSupportsThinking(model.modelId),
       ...effort === undefined ? {} : {
         reasoningEfforts: effort.levels,

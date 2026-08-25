@@ -17,7 +17,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
-import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
+import type { ModelModality, RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { deepEqualJson, installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import {
@@ -25,7 +25,7 @@ import {
   DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   KiroAdapter,
 } from './adapter.ts'
-import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
+import type { AttachmentStore, KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import { kiroCredentialDirectory, resolveTokenFromDirectories } from './auth.ts'
 import { discoverKiroProfileArn, KiroModelDiscovery } from './discovery.ts'
 import { credentialDirectory } from './paths.ts'
@@ -125,24 +125,29 @@ const CONTEXT_1M = 1_000_000
  * are absent because it refuses them as unknown ids — an unlisted id still
  * passes through, so a tier that serves them needs no code change.
  */
+const VISION: ModelModality[] = ['text', 'image']
+const TEXT_ONLY: ModelModality[] = ['text']
+
 const DEFAULT_MODELS: KiroCatalogModel[] = [
-  { id: 'auto', name: 'Auto', thinking: false },
-  { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', thinking: false },
-  { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', thinking: true },
-  { id: 'claude-sonnet-4.6', name: 'Claude Sonnet 4.6', contextWindow: CONTEXT_1M, thinking: true },
-  { id: 'claude-sonnet-4.6-1m', name: 'Claude Sonnet 4.6 (1M)', contextWindow: CONTEXT_1M, thinking: true },
-  { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', contextWindow: CONTEXT_1M, thinking: true },
-  { id: 'claude-opus-4.5', name: 'Claude Opus 4.5', thinking: true },
-  { id: 'claude-opus-4.6', name: 'Claude Opus 4.6', contextWindow: CONTEXT_1M, thinking: true },
-  { id: 'claude-opus-4.6-1m', name: 'Claude Opus 4.6 (1M)', contextWindow: CONTEXT_1M, thinking: true },
-  { id: 'claude-opus-4.7', name: 'Claude Opus 4.7', contextWindow: CONTEXT_1M, thinking: true },
-  { id: 'claude-opus-4.8', name: 'Claude Opus 4.8', contextWindow: CONTEXT_1M, thinking: true },
-  { id: 'claude-opus-5', name: 'Claude Opus 5', contextWindow: CONTEXT_1M, thinking: true },
-  { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', thinking: false },
-  { id: 'deepseek-3.2', name: 'DeepSeek 3.2', thinking: true },
-  { id: 'glm-5', name: 'GLM-5', thinking: true },
-  { id: 'minimax-m2.5', name: 'MiniMax M2.5', thinking: true },
-  { id: 'qwen3-coder-next', name: 'Qwen3 Coder Next', thinking: false },
+  { id: 'auto', name: 'Auto', thinking: false, inputModalities: VISION },
+  { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', thinking: false, inputModalities: VISION },
+  { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', thinking: true, inputModalities: VISION },
+  { id: 'claude-sonnet-4.6', name: 'Claude Sonnet 4.6', contextWindow: CONTEXT_1M, thinking: true, inputModalities: VISION },
+  { id: 'claude-sonnet-4.6-1m', name: 'Claude Sonnet 4.6 (1M)', contextWindow: CONTEXT_1M, thinking: true, inputModalities: VISION },
+  { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', contextWindow: CONTEXT_1M, thinking: true, inputModalities: VISION },
+  { id: 'claude-opus-4.5', name: 'Claude Opus 4.5', thinking: true, inputModalities: VISION },
+  { id: 'claude-opus-4.6', name: 'Claude Opus 4.6', contextWindow: CONTEXT_1M, thinking: true, inputModalities: VISION },
+  { id: 'claude-opus-4.6-1m', name: 'Claude Opus 4.6 (1M)', contextWindow: CONTEXT_1M, thinking: true, inputModalities: VISION },
+  { id: 'claude-opus-4.7', name: 'Claude Opus 4.7', contextWindow: CONTEXT_1M, thinking: true, inputModalities: VISION },
+  { id: 'claude-opus-4.8', name: 'Claude Opus 4.8', contextWindow: CONTEXT_1M, thinking: true, inputModalities: VISION },
+  { id: 'claude-opus-5', name: 'Claude Opus 5', contextWindow: CONTEXT_1M, thinking: true, inputModalities: VISION },
+  { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', thinking: false, inputModalities: VISION },
+  { id: 'deepseek-3.2', name: 'DeepSeek 3.2', thinking: true, inputModalities: VISION },
+  // The catalog reports these two as text-only; declaring images would send
+  // them content the service refuses.
+  { id: 'glm-5', name: 'GLM-5', thinking: true, inputModalities: TEXT_ONLY },
+  { id: 'minimax-m2.5', name: 'MiniMax M2.5', thinking: true, inputModalities: TEXT_ONLY },
+  { id: 'qwen3-coder-next', name: 'Qwen3 Coder Next', thinking: false, inputModalities: VISION },
 ]
 
 /**
@@ -187,6 +192,9 @@ const catalogModel: z<KiroCatalogModel> = z.object({
   contextWindow: z.number().step(1).min(1),
   maxTokens: z.number().step(1).min(1),
   thinking: z.boolean(),
+  // Configurable so a tier whose catalog says nothing can still declare the
+  // capability, and so a model that regresses can have it taken away.
+  inputModalities: z.array(z.union(['text', 'image'])),
   reasoningEfforts: z.array(z.string()),
   defaultReasoningEffort: z.string(),
   effortSchemaPath: z.union(['output_config', 'reasoning']),
@@ -226,6 +234,9 @@ function resolveModels(models: readonly KiroCatalogModel[] | undefined): KiroCat
     const reasoningEfforts = model.reasoningEfforts?.length === 0
       ? undefined
       : model.reasoningEfforts
+    const inputModalities = model.inputModalities?.length === 0
+      ? undefined
+      : model.inputModalities
     if (model.id.length === 0) throw new Error('llm-kiro: catalog model ids must be non-empty')
     if (model.name !== undefined && model.name.length === 0) {
       throw new Error(`llm-kiro: catalog model "${model.id}" has an empty name`)
@@ -283,6 +294,7 @@ function resolveModels(models: readonly KiroCatalogModel[] | undefined): KiroCat
       ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
       ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
       ...model.thinking === undefined ? {} : { thinking: model.thinking },
+      ...inputModalities === undefined ? {} : { inputModalities: [...inputModalities] },
       ...reasoningEfforts === undefined ? {} : { reasoningEfforts: [...reasoningEfforts] },
       ...model.defaultReasoningEffort === undefined
         ? {}
@@ -413,6 +425,15 @@ export function apply(ctx: Context, config: Config): void {
     },
     currentModels: connection => discovery.current(connection),
     selectModels: models => modelSettings.enabledModels(models),
+    // Read lazily: image bytes live in the attachment service, and a profile
+    // that mounts none should simply have no images rather than fail to load.
+    // The request-image encoder arrived after the first attachment release, so
+    // the capability is checked rather than assumed — an older harness then
+    // reports images as unsupported instead of failing inside the adapter.
+    resolveAttachments: () => {
+      const store = ctx.get('attachments') as AttachmentStore | undefined
+      return typeof store?.readImageRequest === 'function' ? store : undefined
+    },
   })
   ctx.llm.registerConfigurableProviders([
     { provider: PROVIDER, displayName: 'Kiro', settingsNs: NS, settingsPath: [] },

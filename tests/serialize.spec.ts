@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { CallId, createAssistantMessage, createMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
 import { serializeRequest } from '../src/serialize.ts'
-import type { WireUserInputMessage } from '../src/types.ts'
+import type { WireImageBlock, WireUserInputMessage } from '../src/types.ts'
 
 const SOURCE = { kind: 'plugin' as const, plugin: 'test' }
 
@@ -37,14 +37,40 @@ function toolResult(id: string, text: string, isError = false): Message {
 }
 
 /** Serialize with the fields every case shares. */
-function serialize(messages: Message[], extra: Partial<GenerateOptions> = {}, defaults = {}) {
+function serialize(
+  messages: Message[],
+  extra: Partial<GenerateOptions> = {},
+  defaults = {},
+  images?: ReadonlyMap<string, WireImageBlock>,
+) {
   return serializeRequest(
     { provider: 'kiro', model: 'claude-sonnet-4.5', messages, ...extra },
     defaults,
     'conv-1',
     'arn:aws:codewhisperer:us-east-1:1:profile/X',
+    undefined,
+    undefined,
+    images,
   )
 }
+
+/** A durable image reference shaped like the attachment service's own. */
+function imageRef(id: string) {
+  return { attachmentId: id, mediaType: 'image/png', bytes: 4, width: 2, height: 2 }
+}
+
+/** One user message carrying a single image block. */
+function userImage(id: string, text?: string) {
+  return createUserMessage({
+    content: [
+      ...text === undefined ? [] : [{ type: 'text' as const, text }],
+      { type: 'image' as const, attachment: imageRef(id) },
+    ],
+    source: SOURCE,
+  } as never)
+}
+
+const PREPARED_PNG: WireImageBlock = { format: 'png', source: { bytes: 'aGVsbG8=' } }
 
 /** The history entries, narrowed for assertions. */
 function history(request: ReturnType<typeof serialize>) {
@@ -301,16 +327,59 @@ describe('serializeRequest', () => {
     })
   })
 
-  it('refuses image content instead of silently dropping it', () => {
-    const message = createUserMessage({
-      content: [{
-        type: 'image',
-        attachment: { id: 'a', mediaType: 'image/png', byteLength: 1, width: 1, height: 1 },
-      }],
+  it('puts a prepared user image on its own turn', () => {
+    const request = serialize(
+      [userImage('att-1', 'what is this?')],
+      {},
+      {},
+      new Map([['att-1', PREPARED_PNG]]),
+    )
+    expect(request.conversationState.currentMessage.userInputMessage).toMatchObject({
+      content: 'what is this?',
+      images: [{ format: 'png', source: { bytes: 'aGVsbG8=' } }],
+    })
+  })
+
+  it('refuses an image nobody prepared rather than dropping it', () => {
+    // A missing preparation is a bug in the adapter, not user content to discard:
+    // sending the turn without the image would answer about nothing.
+    expect(() => serialize([userImage('att-missing')]))
+      .toThrowError(expect.objectContaining({ code: 'INVALID_REQUEST' }))
+  })
+
+  it('refuses an image on an assistant turn, which has no wire seat for one', () => {
+    const message = createAssistantMessage({
+      content: [{ type: 'image', attachment: imageRef('att-2') }],
       source: SOURCE,
     } as never)
-    expect(() => serialize([message]))
+    expect(() => serialize([user('hi'), message, user('again')], {}, {}, new Map([['att-2', PREPARED_PNG]])))
       .toThrowError(expect.objectContaining({ code: 'UNSUPPORTED_CONTENT' }))
+  })
+
+  it('hoists an image out of a tool result onto the same user turn', () => {
+    // `ToolResultContentBlock` is a union of text and json only, so the
+    // enclosing turn is the nearest seat that keeps the screenshot.
+    const result = createToolResultMessage({
+      callId: CallId('call-1'),
+      content: [
+        { type: 'text', text: 'screenshot taken' },
+        { type: 'image', attachment: imageRef('att-3') },
+      ],
+    } as never)
+    const request = serialize(
+      [user('shoot'), assistant('', [{ id: 'call-1', name: 'shoot', args: '{}' }]), result],
+      {},
+      {},
+      new Map([['att-3', PREPARED_PNG]]),
+    )
+    const current = request.conversationState.currentMessage.userInputMessage
+    expect(current.images).toEqual([PREPARED_PNG])
+    expect(current.userInputMessageContext?.toolResults?.[0]?.toolUseId).toBe('call-1')
+  })
+
+  it('sends no images member when the request has none', () => {
+    const request = serialize([user('text only')])
+    expect(request.conversationState.currentMessage.userInputMessage.images).toBeUndefined()
   })
 
   it('refuses a request with no messages', () => {

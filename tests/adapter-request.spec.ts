@@ -48,6 +48,7 @@ function connection(): KiroConnectionOptions {
       defaultReasoningEffort: 'high',
       effortSchemaPath: 'output_config',
       maxTokensBounds: { minimum: 1024, maximum: 128_000 },
+      inputModalities: ['text', 'image'],
     }],
     streamIdleTimeoutMs: 300_000,
     tokenExpiryBufferMs: 300_000,
@@ -55,7 +56,10 @@ function connection(): KiroConnectionOptions {
   } as KiroConnectionOptions
 }
 
-function adapter(options = connection()): InstanceType<typeof KiroAdapter> {
+function adapter(
+  options = connection(),
+  extra: Record<string, unknown> = {},
+): InstanceType<typeof KiroAdapter> {
   return new KiroAdapter({
     options: () => options,
     resolveToken: () => Promise.resolve({
@@ -64,7 +68,22 @@ function adapter(options = connection()): InstanceType<typeof KiroAdapter> {
       expiresAt: Date.now() + 60_000,
       authMethod: 'builder-id' as const,
     }),
-  })
+    ...extra,
+  } as never)
+}
+
+/** One user message carrying an image reference, as the harness would build it. */
+function userImage(id: string, text?: string): Message {
+  return createUserMessage({
+    content: [
+      ...text === undefined ? [] : [{ type: 'text' as const, text }],
+      {
+        type: 'image' as const,
+        attachment: { attachmentId: id, mediaType: 'image/png', bytes: 3, width: 1, height: 1 },
+      },
+    ],
+    source: SOURCE,
+  } as never)
 }
 
 /** One successful response body: some text and a normal terminal stop. */
@@ -187,6 +206,81 @@ describe('Kiro request identity and generation options', () => {
     }
     expect(chunks.some(chunk => chunk.type === 'usage')).toBe(false)
     expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+  })
+
+  it('sends a user image as a wire image block on a vision model', async () => {
+    respond = () => okResponse(textFrame('a cat'))
+    const read: string[] = []
+    const chunks: { type: string }[] = []
+    for await (const chunk of adapter(connection(), {
+      resolveAttachments: () => ({
+        readImageRequest: async (ref: { attachmentId: string }) => {
+          read.push(ref.attachmentId)
+          return { data: new Uint8Array([1, 2, 3]), mediaType: 'image/png' as const }
+        },
+      }),
+    }).stream({
+      provider: 'kiro',
+      model: 'claude-opus-5',
+      messages: [userImage('att-1', 'what is this?')],
+    } as GenerateOptions)) {
+      chunks.push(chunk as { type: string })
+    }
+    expect(read).toEqual(['att-1'])
+    const body = JSON.parse(posted.at(-1)?.body ?? '{}') as WireRequest
+    expect(body.conversationState.currentMessage.userInputMessage.images).toEqual([
+      { format: 'png', source: { bytes: 'AQID' } },
+    ])
+    expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
+  })
+
+  it('refuses an image for a model the catalog reports as text-only', async () => {
+    // Refused before any byte is read: the service would reject the whole turn,
+    // and the harness gates on the same capability this reports.
+    let readCalls = 0
+    await expect((async () => {
+      const textOnly = { ...connection(), models: [{ id: 'glm-5', name: 'GLM-5', inputModalities: ['text'] }] } as KiroConnectionOptions
+      for await (const _chunk of adapter(textOnly, {
+        resolveAttachments: () => ({
+          readImageRequest: async () => {
+            readCalls += 1
+            return { data: new Uint8Array([1]), mediaType: 'image/png' as const }
+          },
+        }),
+      }).stream({
+        provider: 'kiro',
+        model: 'glm-5',
+        messages: [userImage('att-1')],
+      } as GenerateOptions)) { /* the first pull throws */ }
+    })()).rejects.toThrowError(expect.objectContaining({ code: 'UNSUPPORTED_CONTENT' }))
+    expect(readCalls).toBe(0)
+  })
+
+  it('refuses an image when the profile mounts no attachment service', async () => {
+    await expect((async () => {
+      for await (const _chunk of adapter().stream({
+        provider: 'kiro',
+        model: 'claude-opus-5',
+        messages: [userImage('att-1')],
+      } as GenerateOptions)) { /* the first pull throws */ }
+    })()).rejects.toThrowError(expect.objectContaining({ code: 'UNSUPPORTED_CONTENT' }))
+  })
+
+  it('refuses a media type outside Kiro’s image formats', async () => {
+    await expect((async () => {
+      for await (const _chunk of adapter(connection(), {
+        resolveAttachments: () => ({
+          readImageRequest: async () => ({
+            data: new Uint8Array([1]),
+            mediaType: 'image/bmp' as never,
+          }),
+        }),
+      }).stream({
+        provider: 'kiro',
+        model: 'claude-opus-5',
+        messages: [userImage('att-1')],
+      } as GenerateOptions)) { /* the first pull throws */ }
+    })()).rejects.toThrowError(expect.objectContaining({ code: 'UNSUPPORTED_CONTENT' }))
   })
 
   it('prices the turn from the provider’s context percentage and the catalog window', async () => {

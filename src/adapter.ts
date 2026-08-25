@@ -10,6 +10,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import {
+  contentHasImage,
   CONTEXT_WINDOW_EXCEEDED_CODE,
   isContextWindowExceededError,
   isQuotaExceededError,
@@ -21,16 +22,20 @@ import {
   userAgent,
 } from '@deepseek-ai/dsh-llm'
 import type {
+  ContentBlock,
   GenerateOptions,
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
+  ModelModality,
   ResolvedRetryPolicy,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
+import type { AttachmentId, ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { decodeFrames } from './eventstream.ts'
 import { serializeRequest } from './serialize.ts'
+import type { WireImageBlock } from './types.ts'
 import type { RequestDefaults } from './serialize.ts'
 import { post } from './transport.ts'
 import { translate } from './translate.ts'
@@ -118,6 +123,13 @@ export interface KiroCatalogModel {
   maxTokens?: number
   /** Whether this model honors the thinking markers. */
   thinking?: boolean
+  /**
+   * Request modalities this model accepts, from the catalog's own
+   * `supportedInputTypes`. Absent means text only, matching the harness rule
+   * that an explicit omission is negative capability: a model whose capability
+   * nobody stated must not be sent images.
+   */
+  inputModalities?: ModelModality[]
   /** Exact effort ids advertised by this account's live model schema. */
   reasoningEfforts?: string[]
   /** Provider-selected effort for this model. */
@@ -184,6 +196,22 @@ export interface KiroAdapterOptions {
   currentModels?: (connection: KiroConnectionOptions) => readonly KiroCatalogModel[] | undefined
   /** Apply the plugin-owned enabled-model selection before publishing the catalog. */
   selectModels?: (models: readonly KiroCatalogModel[]) => Promise<readonly KiroCatalogModel[]>
+  /**
+   * Reach the attachment store that owns image bytes, resolved per request so a
+   * profile without it simply has no images rather than failing to load. Image
+   * blocks carry a reference, never the bytes, so this is the only way to send
+   * one upstream.
+   */
+  resolveAttachments?: () => AttachmentStore | undefined
+}
+
+/** The attachment-store surface this adapter uses: one call, by reference. */
+export interface AttachmentStore {
+  readImageRequest: (
+    ref: ImageAttachmentRef,
+    policy: { maxPixels: number; maxBytes: number },
+    signal?: AbortSignal,
+  ) => Promise<{ data: Uint8Array; mediaType: ImageMediaType }>
 }
 
 /** Select the auth-specific upstream surface Kiro accepts. */
@@ -200,6 +228,86 @@ export function kiroTokenTypeHeaders(token: KiroToken): Record<string, string> {
   return {}
 }
 
+/**
+ * Request-image budget for a Kiro turn.
+ *
+ * Kiro's catalog states token limits and cache checkpoints but says nothing
+ * about image bounds, so these follow the service its models run behind:
+ * 8000x8000 is the documented per-image dimension ceiling, and 3.75 MB is the
+ * encoded-byte ceiling. Both are applied before base64 expansion, which is what
+ * the wire actually carries.
+ */
+const IMAGE_MAX_PIXELS = 8000 * 8000
+const IMAGE_MAX_BYTES = 3_750_000
+
+/** Media types Kiro's `ImageFormat` enum accepts, mapped to its own spelling. */
+const IMAGE_FORMATS = new Map<ImageMediaType, WireImageBlock['format']>([
+  ['image/png', 'png'],
+  ['image/jpeg', 'jpeg'],
+  ['image/gif', 'gif'],
+  ['image/webp', 'webp'],
+])
+
+/**
+ * Collect every image reference in one request, including images nested in tool
+ * results, so each is read exactly once however often it is repeated.
+ * @param content - blocks from one message.
+ * @param refs - accumulator keyed by attachment id.
+ */
+function collectImageRefs(
+  content: readonly ContentBlock[],
+  refs: Map<AttachmentId, ImageAttachmentRef>,
+): void {
+  for (const block of content) {
+    if (block.type === 'image') refs.set(block.attachment.attachmentId, block.attachment)
+    else if (block.type === 'tool-result') collectImageRefs(block.content, refs)
+  }
+}
+
+/**
+ * Read and re-encode every request image into Kiro's wire shape.
+ *
+ * Returned as a map so serialization stays synchronous and the bytes for one
+ * attachment are fetched once no matter how many turns repeat it.
+ * @param options - the harness request.
+ * @param store - the attachment store, when the profile mounts one.
+ * @param signal - request cancellation.
+ * @returns wire image blocks by attachment id; empty when the request has none.
+ * @throws `LlmError('UNSUPPORTED_CONTENT')` for a media type Kiro cannot accept.
+ */
+async function prepareImages(
+  options: GenerateOptions,
+  store: AttachmentStore | undefined,
+  signal: AbortSignal,
+): Promise<Map<AttachmentId, WireImageBlock>> {
+  const refs = new Map<AttachmentId, ImageAttachmentRef>()
+  for (const message of options.messages) collectImageRefs(message.content, refs)
+  const prepared = new Map<AttachmentId, WireImageBlock>()
+  if (refs.size === 0) return prepared
+  if (store === undefined) {
+    throw new LlmError(
+      'Kiro cannot send images because this profile mounts no attachment service.',
+      'UNSUPPORTED_CONTENT',
+    )
+  }
+  for (const [id, ref] of refs) {
+    const version = await store.readImageRequest(
+      ref,
+      { maxPixels: IMAGE_MAX_PIXELS, maxBytes: IMAGE_MAX_BYTES },
+      signal,
+    )
+    const format = IMAGE_FORMATS.get(version.mediaType)
+    if (format === undefined) {
+      throw new LlmError(
+        `Kiro accepts png, jpeg, gif and webp images; ${ref.mediaType} is not one of them.`,
+        'UNSUPPORTED_CONTENT',
+      )
+    }
+    prepared.set(id, { format, source: { bytes: Buffer.from(version.data).toString('base64') } })
+  }
+  return prepared
+}
+
 /** Describe one catalog entry for selector consumers. */
 function modelInfo(provider: string, model: KiroCatalogModel): LlmModelInfo {
   return {
@@ -207,7 +315,7 @@ function modelInfo(provider: string, model: KiroCatalogModel): LlmModelInfo {
     id: model.id,
     name: model.name ?? model.id,
     ...model.description === undefined ? {} : { description: model.description },
-    inputModalities: ['text'],
+    inputModalities: model.inputModalities ?? ['text'],
   }
 }
 
@@ -441,6 +549,19 @@ export class KiroAdapter extends LlmAdapter {
             ? {}
             : { defaultLevel: selected.defaultReasoningEffort },
         }
+    // Capability before bytes: a model the catalog says is text-only must be
+    // refused here rather than have the service reject the whole turn, and the
+    // harness's own gate reads the same `inputModalities` this reports.
+    const requestHasImages = options.messages.some(message => contentHasImage(message.content))
+    if (requestHasImages && selected?.inputModalities?.includes('image') !== true) {
+      throw new LlmError(
+        `Kiro model "${options.model}" does not accept images.`,
+        'UNSUPPORTED_CONTENT',
+      )
+    }
+    const images = requestHasImages
+      ? await prepareImages(options, this.config.resolveAttachments?.(), signal)
+      : undefined
     const body = JSON.stringify(serializeRequest(
       options,
       connection.defaults,
@@ -450,6 +571,7 @@ export class KiroAdapter extends LlmAdapter {
       selected?.maxTokensBounds === undefined
         ? undefined
         : { maxTokensBounds: selected.maxTokensBounds },
+      images,
     ))
     const response = await post({
       url,

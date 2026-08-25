@@ -4,6 +4,7 @@ import {
   KiroModelDiscovery,
   modelSupportsThinking,
   parseAvailableModels,
+  parseInputModalities,
   parseEffortSchema,
   parseMaxTokensBounds,
 } from '../src/discovery.ts'
@@ -302,5 +303,38 @@ describe('Kiro model discovery', () => {
     })
     await expect(discovery.list(connection, new AbortController().signal))
       .rejects.toMatchObject({ code: 'FORBIDDEN' })
+  })
+})
+
+describe('input modalities come from the catalog, not the model id', () => {
+  it('reads the service vocabulary in a fixed display order', () => {
+    // The catalog reports `supportedInputTypes: ["TEXT","IMAGE"]`; order is
+    // normalized so one account's ordering cannot become a UI difference.
+    expect(parseInputModalities(['IMAGE', 'TEXT'])).toEqual(['text', 'image'])
+    expect(parseInputModalities(['TEXT'])).toEqual(['text'])
+    expect(parseInputModalities(['text', 'image', 'text'])).toEqual(['text', 'image'])
+  })
+
+  it('treats an unreadable value as unstated rather than text-only', () => {
+    // Absence leaves the configured default in force; inventing `['text']` here
+    // would silently strip image support from a model that has it.
+    expect(parseInputModalities(undefined)).toBeUndefined()
+    expect(parseInputModalities('IMAGE')).toBeUndefined()
+    expect(parseInputModalities([])).toBeUndefined()
+    expect(parseInputModalities(['VIDEO'])).toBeUndefined()
+    expect(parseInputModalities([42, null])).toBeUndefined()
+  })
+
+  it('carries the capability onto the discovered catalog entry', () => {
+    const models = parseAvailableModels({
+      models: [
+        { modelId: 'claude-opus-5', modelName: 'Claude Opus 5', supportedInputTypes: ['TEXT', 'IMAGE'] },
+        { modelId: 'glm-5', modelName: 'GLM-5', supportedInputTypes: ['TEXT'] },
+        { modelId: 'mystery', modelName: 'Mystery' },
+      ],
+    })
+    expect(models.find(model => model.id === 'claude-opus-5')?.inputModalities).toEqual(['text', 'image'])
+    expect(models.find(model => model.id === 'glm-5')?.inputModalities).toEqual(['text'])
+    expect(models.find(model => model.id === 'mystery')?.inputModalities).toBeUndefined()
   })
 })

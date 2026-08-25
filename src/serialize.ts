@@ -22,6 +22,7 @@ import { contentHasImage, LlmError } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
 import type {
   WireHistoryEntry,
+  WireImageBlock,
   WireRequest,
   WireTool,
   WireToolResult,
@@ -233,11 +234,57 @@ function flattenText(blocks: readonly ContentBlock[]): string {
     .join('')
 }
 
-/** Reject image content before text flattening can silently erase it. */
-function assertTextOnly(blocks: readonly ContentBlock[]): void {
+/** Wire images for one request, keyed by the attachment they were read from. */
+export type PreparedImages = ReadonlyMap<string, WireImageBlock>
+
+/**
+ * Reject images in a role whose wire message has nowhere to put them.
+ * @param blocks - blocks from one message.
+ * @param role - the role being serialized, named in the error.
+ * @throws `LlmError('UNSUPPORTED_CONTENT')` when the role carries an image.
+ */
+function assertNoImages(blocks: readonly ContentBlock[], role: string): void {
   if (contentHasImage(blocks)) {
-    throw new LlmError('The Kiro adapter does not support image content.', 'UNSUPPORTED_CONTENT')
+    throw new LlmError(
+      `Kiro accepts images only on user turns; this request has one on a ${role} turn.`,
+      'UNSUPPORTED_CONTENT',
+    )
   }
+}
+
+/**
+ * Collect the wire images for one user message, in content order.
+ *
+ * Images nested in a tool result are hoisted onto the same user turn: the
+ * service's `ToolResultContentBlock` is a union of text and json only, so a
+ * screenshot returned by a tool has no seat of its own, and the enclosing turn
+ * is the nearest place that preserves it rather than discarding it.
+ * @param blocks - blocks from one user message.
+ * @param prepared - wire images already read for this request.
+ * @returns wire image blocks in the order they appear.
+ * @throws `LlmError('INVALID_REQUEST')` when a block was never prepared.
+ */
+function imagesOf(
+  blocks: readonly ContentBlock[],
+  prepared: PreparedImages,
+): WireImageBlock[] {
+  const images: WireImageBlock[] = []
+  const walk = (content: readonly ContentBlock[]): void => {
+    for (const block of content) {
+      if (block.type === 'image') {
+        const image = prepared.get(block.attachment.attachmentId)
+        if (image === undefined) {
+          throw new LlmError(
+            `Kiro request image ${block.attachment.attachmentId} was not prepared.`,
+            'INVALID_REQUEST',
+          )
+        }
+        images.push(image)
+      } else if (block.type === 'tool-result') walk(block.content)
+    }
+  }
+  walk(blocks)
+  return images
 }
 
 /**
@@ -301,6 +348,7 @@ function parseArguments(raw: string): unknown {
 interface UserTurn {
   text: string
   toolResults: WireToolResult[]
+  images: WireImageBlock[]
 }
 
 /**
@@ -310,15 +358,20 @@ interface UserTurn {
  * @param messages - the harness conversation, in order.
  * @returns the folded turns, each tagged with its role.
  */
-function foldTurns(messages: readonly Message[]): (
+function foldTurns(
+  messages: readonly Message[],
+  images: PreparedImages,
+): (
   | { role: 'user'; turn: UserTurn }
   | { role: 'assistant'; text: string; toolUses: WireToolUse[] }
 )[] {
   const turns: ReturnType<typeof foldTurns> = []
   for (const message of messages) {
-    assertTextOnly(message.content)
     const text = flattenText(message.content)
     if (message.role === 'assistant') {
+      // The wire's assistant message has no image seat, so an assistant image
+      // cannot be replayed; refusing beats dropping it from history silently.
+      assertNoImages(message.content, 'assistant')
       const toolUses = toolUsesOf(message)
       const last = turns.at(-1)
       if (last?.role === 'assistant') {
@@ -332,13 +385,15 @@ function foldTurns(messages: readonly Message[]): (
     // Both `user` and `system` roles reach the model as user content: Kiro has
     // no system slot, and a mid-conversation system message is context.
     const toolResults = toolResultsOf(message)
+    const turnImages = imagesOf(message.content, images)
     const last = turns.at(-1)
     if (last?.role === 'user') {
       last.turn.text = [last.turn.text, text].filter(part => part.length > 0).join('\n\n')
       last.turn.toolResults = [...last.turn.toolResults, ...toolResults]
+      last.turn.images = [...last.turn.images, ...turnImages]
       continue
     }
-    turns.push({ role: 'user', turn: { text, toolResults } })
+    turns.push({ role: 'user', turn: { text, toolResults, images: turnImages } })
   }
   return turns
 }
@@ -363,6 +418,7 @@ function userMessage(
     modelId: model,
     origin: ORIGIN,
     ...context === undefined ? {} : { userInputMessageContext: context },
+    ...turn.images.length === 0 ? {} : { images: turn.images },
   }
 }
 
@@ -379,9 +435,11 @@ function userMessage(
  * @param profileArn - CodeWhisperer profile the account bills against.
  * @param nativeEffort - live effort levels and their provider request path.
  * @param limits - live per-model generation bounds, when discovery supplied them.
+ * @param images - wire images already read for this request, by attachment id.
  * @returns the request body.
- * @throws `LlmError` when the request carries images, an unusable tool name,
- *   an unsupported effort, an unusable generation option, or no messages at all.
+ * @throws `LlmError` when an image cannot be placed, a tool name is unusable,
+ *   an effort is unsupported, a generation option is unusable, or there are no
+ *   messages at all.
  */
 export function serializeRequest(
   options: GenerateOptions,
@@ -390,14 +448,15 @@ export function serializeRequest(
   profileArn?: string,
   nativeEffort?: NativeEffortConfig,
   limits?: ModelLimits,
+  images: PreparedImages = new Map(),
 ): WireRequest {
   if (options.messages.length === 0) {
     throw new LlmError('Kiro requires at least one message', 'INVALID_REQUEST')
   }
   const effort = resolveEffort(options, defaults, nativeEffort)
-  const turns = foldTurns(options.messages)
+  const turns = foldTurns(options.messages, images)
   if (turns.at(-1)?.role === 'assistant') {
-    turns.push({ role: 'user', turn: { text: CONTINUE_PADDING, toolResults: [] } })
+    turns.push({ role: 'user', turn: { text: CONTINUE_PADDING, toolResults: [], images: [] } })
   }
   const current = turns.pop()
   /* v8 ignore next -- a non-empty conversation always folds to at least one turn */
@@ -412,7 +471,7 @@ export function serializeRequest(
     const expected = history.length % 2 === 0 ? 'user' : 'assistant'
     if (entry.role !== expected) {
       history.push(expected === 'user'
-        ? { userInputMessage: userMessage({ text: CONTINUE_PADDING, toolResults: [] }, options.model) }
+        ? { userInputMessage: userMessage({ text: CONTINUE_PADDING, toolResults: [], images: [] }, options.model) }
         : { assistantResponseMessage: { content: ACKNOWLEDGE_PADDING } })
     }
     if (entry.role === 'user') {
@@ -465,7 +524,9 @@ export function serializeRequest(
 
   const system = systemText(options, effort, nativeEffort)
   const currentMessage = userMessage(
-    { text, toolResults: matched },
+    // The current turn keeps its own images, including any hoisted out of a
+    // tool result it carries.
+    { text, toolResults: matched, images: current.turn.images },
     options.model,
     tools.length > 0 || matched.length > 0
       ? {

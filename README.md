@@ -23,6 +23,7 @@ This is an independent integration and is not affiliated with or endorsed by AWS
 - Show the account plan, credit usage, and reset date, with a compact persistent model allowlist.
 - Auto-discover each model's reasoning efforts, including `none`, `xhigh`, and `max` where Kiro offers them.
 - Stream text, reasoning, and tool calls from Kiro's Amazon EventStream protocol.
+- Send images to every model whose catalog entry accepts them, which unlocks image attachments and the harness's own image-reading tool.
 - Support direct egress or an authenticated HTTP/HTTPS `CONNECT` proxy.
 - Hot-reload `llm-kiro` settings without restarting DSH.
 
@@ -180,6 +181,14 @@ The terminal `metadataEvent` supplies the finish reason: `END_TURN`, `TOOL_USE`,
 - Models that publish no schema at all receive no `additionalModelRequestFields`, because the member itself is refused for them.
 
 Nothing else has an accepted placement. `temperature`, `topP`, and stop sequences are not part of this operation's contract — an unadvertised property is rejected outright — so those options are ignored rather than sent.
+
+### Images
+
+Every model whose catalog entry declares `supportedInputTypes: ["TEXT","IMAGE"]` accepts images — on the verified account that is 17 of 19, including all Claude routes, with `glm-5` and `minimax-m2.5` reporting text only. The capability is read from the catalog rather than guessed from the model id, so a route that gains or loses it needs no code change; `models[].inputModalities` overrides it when a tier disagrees, and a model that states nothing stays text-only because an unstated capability must not be assumed.
+
+Kiro accepts png, jpeg, gif and webp. Images are re-encoded to at most 8000x8000 pixels and 3.75 MB before base64 expansion, matching the bounds of the service its models run behind, and travel as `userInputMessage.images` — `ImageBlock { format, source: { bytes } }`.
+
+Only user turns have an image seat on this wire. The service's `AssistantResponseMessage` has none, so an image in replayed assistant history is refused rather than dropped, and `ToolResultContentBlock` is a union of text and json only, so an image returned by a tool is hoisted onto the user turn that carries its result — the nearest place that keeps it. Image bytes live in the harness's attachment service, so a profile that mounts none, or one older than that service's request-image encoder, reports images as unsupported instead of failing mid-request.
 
 ### Token accounting
 

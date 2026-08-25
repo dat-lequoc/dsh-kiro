@@ -1,7 +1,21 @@
 /** Live Kiro model discovery through ListAvailableModels. */
+import type { ModelModality } from '@deepseek-ai/dsh-llm';
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts';
 import type { KiroToken } from './auth.ts';
 import { getJson, postJsonWithHeaders } from './transport.ts';
+/**
+ * Read the input modalities a catalog entry declares.
+ *
+ * The service states this per model as `supportedInputTypes: ["TEXT","IMAGE"]`,
+ * so the capability is read rather than inferred from the model id: on this
+ * account 17 of 19 models accept images while `glm-5` and `minimax-m2.5` accept
+ * only text, and an id-based guess would send images to a model that refuses
+ * them. An unreadable value yields absence, which leaves the configured default
+ * in force instead of silently narrowing the model to text.
+ * @param value - the raw `supportedInputTypes` member.
+ * @returns declared modalities in display order, or undefined when unreadable.
+ */
+export declare function parseInputModalities(value: unknown): ModelModality[] | undefined;
 /** Request hook used to test discovery without network access. */
 export type ModelDiscoveryRequest = typeof getJson;
 /** POST hook used for ListAvailableProfiles. */
