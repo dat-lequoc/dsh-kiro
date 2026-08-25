@@ -15,7 +15,7 @@ import {
 import type { GenerateOptions, Message, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { httpErrorCode } from '../src/adapter.ts'
 import { serializeRequest } from '../src/serialize.ts'
-import { translate } from '../src/translate.ts'
+import { contextUsageTokens, translate } from '../src/translate.ts'
 import { decodeFrames } from '../src/eventstream.ts'
 import type { WireHistoryEntry } from '../src/types.ts'
 import { chunked, frame, join } from './frames.ts'
@@ -72,7 +72,8 @@ function event(type: string, payload: unknown): Uint8Array {
 
 async function run(...frames: Uint8Array[]): Promise<StreamChunk[]> {
   const collected: StreamChunk[] = []
-  for await (const chunk of translate(decodeFrames(chunked(join(...frames), 4096)))) {
+  // 200,000 is the advertised window of the model these fixtures stand in for.
+  for await (const chunk of translate(decodeFrames(chunked(join(...frames), 4096)), 200_000)) {
     collected.push(chunk)
   }
   return collected
@@ -353,6 +354,112 @@ describe('P1-2 provider stop reasons', () => {
         JSON.stringify({ message: 'slow down' }),
       ),
     )).rejects.toMatchObject({ code: 'throttlingException' })
+  })
+})
+
+describe('P1-4 usage telemetry', () => {
+  it('publishes exact buckets when Kiro sends them', async () => {
+    const chunks = await run(
+      event('assistantResponseEvent', { content: 'hi' }),
+      event('metadataEvent', {
+        tokenUsage: {
+          uncachedInputTokens: 120,
+          outputTokens: 8,
+          cacheReadInputTokens: 4000,
+          cacheWriteInputTokens: 40,
+          totalTokens: 4168,
+        },
+      }),
+    )
+    expect(chunks.find(chunk => chunk.type === 'usage'))
+      .toEqual({
+        type: 'usage',
+        usage: { inputTokens: 120, outputTokens: 8, cacheReadTokens: 4000, cacheWriteTokens: 40 },
+      })
+  })
+
+  it('recovers the input bucket from a total-only report', async () => {
+    // `totalTokens` is declared alongside the buckets; a route that reports the
+    // total without the uncached bucket must still price the input.
+    const chunks = await run(
+      event('assistantResponseEvent', { content: 'hi' }),
+      event('metadataEvent', {
+        tokenUsage: { totalTokens: 500, outputTokens: 100, cacheReadInputTokens: 300 },
+      }),
+    )
+    expect(chunks.find(chunk => chunk.type === 'usage'))
+      .toEqual({
+        type: 'usage',
+        usage: { inputTokens: 100, outputTokens: 100, cacheReadTokens: 300 },
+      })
+  })
+
+  it('prices the call from the provider’s context percentage when no buckets arrive', async () => {
+    // Every observed live route sends contextUsageEvent and no metadataEvent, so
+    // this is the path that actually runs. 12.5% of a 200,000-token window is
+    // 25,000 input tokens; the output side is scaled from emitted characters.
+    const chunks = await run(
+      event('assistantResponseEvent', { content: 'x'.repeat(40) }),
+      event('contextUsageEvent', { contextUsagePercentage: 12.5 }),
+      event('meteringEvent', { unit: 'credit', unitPlural: 'credits', usage: 1 }),
+    )
+    expect(chunks.find(chunk => chunk.type === 'usage'))
+      .toEqual({ type: 'usage', usage: { inputTokens: 25_000, outputTokens: 10 } })
+  })
+
+  it('prefers exact buckets over the derived measurement', async () => {
+    const chunks = await run(
+      event('assistantResponseEvent', { content: 'x'.repeat(40) }),
+      event('contextUsageEvent', { contextUsagePercentage: 50 }),
+      event('metadataEvent', { tokenUsage: { uncachedInputTokens: 7, outputTokens: 3 } }),
+    )
+    expect(chunks.find(chunk => chunk.type === 'usage'))
+      .toEqual({ type: 'usage', usage: { inputTokens: 7, outputTokens: 3 } })
+  })
+
+  it('publishes nothing when neither signal is usable', async () => {
+    expect(contextUsageTokens(undefined, 200_000, 100)).toBeUndefined()
+    expect(contextUsageTokens(12.5, undefined, 100)).toBeUndefined()
+    expect(contextUsageTokens(0, 200_000, 100)).toBeUndefined()
+    expect(contextUsageTokens(101, 200_000, 100)).toBeUndefined()
+    expect(contextUsageTokens(12.5, 0, 100)).toBeUndefined()
+    // A percentage too small to round up to one token is not usage either.
+    expect(contextUsageTokens(0.00001, 1000, 0)).toBeUndefined()
+  })
+
+  it('counts reasoning characters towards the derived output', async () => {
+    const chunks = await run(
+      event('reasoningContentEvent', { text: 'y'.repeat(20) }),
+      event('assistantResponseEvent', { content: 'z'.repeat(20) }),
+      event('contextUsageEvent', { contextUsagePercentage: 1 }),
+    )
+    expect(chunks.find(chunk => chunk.type === 'usage'))
+      .toEqual({ type: 'usage', usage: { inputTokens: 2000, outputTokens: 10 } })
+  })
+})
+
+describe('account allowance classification', () => {
+  it('maps Kiro’s 402 plan limit to the canonical quota code', () => {
+    // Observed live once the account was spent: retrying cannot help, so it must
+    // not read as a rate limit or an opaque HTTP_402.
+    expect(httpErrorCode(402, JSON.stringify({
+      message: 'You have reached the limit.',
+      reason: 'MONTHLY_REQUEST_COUNT',
+    }))).toBe('QUOTA')
+  })
+
+  it('maps a credit-rate 403 to quota but keeps other 403s forbidden', () => {
+    expect(httpErrorCode(403, JSON.stringify({ reason: 'CREDIT_CONSUMPTION_RATE_EXCEEDED' })))
+      .toBe('QUOTA')
+    expect(httpErrorCode(403, JSON.stringify({ message: 'not entitled' }))).toBe('FORBIDDEN')
+    expect(httpErrorCode(403, 'expired bearer token')).toBe('AUTH')
+  })
+
+  it('separates a burst throttle from a spent monthly allowance', () => {
+    expect(httpErrorCode(429, JSON.stringify({ reason: 'USER_REQUEST_RATE_EXCEEDED' })))
+      .toBe('RATE_LIMIT')
+    expect(httpErrorCode(429, JSON.stringify({ reason: 'MONTHLY_REQUEST_COUNT' })))
+      .toBe('QUOTA')
   })
 })
 

@@ -41,6 +41,7 @@ function connection(): KiroConnectionOptions {
     models: [{
       id: 'claude-opus-5',
       name: 'Claude Opus 5',
+      contextWindow: 1_000_000,
       maxTokens: 128_000,
       thinking: true,
       reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -168,7 +169,7 @@ describe('Kiro request identity and generation options', () => {
     })
   })
 
-  it('reports no usage at all when Kiro sends no token metadata', async () => {
+  it('reports no usage at all when Kiro sends no usable signal', async () => {
     respond = () => okResponse(
       textFrame('answer'),
       frame(
@@ -186,5 +187,31 @@ describe('Kiro request identity and generation options', () => {
     }
     expect(chunks.some(chunk => chunk.type === 'usage')).toBe(false)
     expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+  })
+
+  it('prices the turn from the provider’s context percentage and the catalog window', async () => {
+    // This is the signal every observed live route actually sends. The catalog
+    // entry advertises a 1,000,000-token window, so 2.5% is 25,000 input tokens.
+    respond = () => okResponse(
+      textFrame('answer'),
+      frame(
+        { ':event-type': 'contextUsageEvent', ':message-type': 'event' },
+        JSON.stringify({ contextUsagePercentage: 2.5 }),
+      ),
+      frame(
+        { ':event-type': 'meteringEvent', ':message-type': 'event' },
+        JSON.stringify({ unit: 'credit', unitPlural: 'credits', usage: 1 }),
+      ),
+    )
+    const chunks: { type: string }[] = []
+    for await (const chunk of adapter().stream({
+      provider: 'kiro',
+      model: 'claude-opus-5',
+      messages: [user('hello')],
+    } as GenerateOptions)) {
+      chunks.push(chunk as { type: string })
+    }
+    const usage = chunks.find(chunk => chunk.type === 'usage')
+    expect(usage).toEqual({ type: 'usage', usage: { inputTokens: 25_000, outputTokens: 2 } })
   })
 })

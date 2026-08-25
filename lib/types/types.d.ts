@@ -100,12 +100,22 @@ export interface WireMeteringEvent {
     unitPlural: string;
     usage: number;
 }
-/** Exact, disjoint token counters reported at the end of a model call. */
+/**
+ * Exact token counters reported at the end of a model call.
+ *
+ * The wire schema declares seven members. The four bucket counters are disjoint;
+ * `totalTokens` is their sum, and the last two are not buckets at all —
+ * `contextUsagePercentage` repeats the standalone `contextUsageEvent`, and
+ * `normalizedTokenUsage` is Kiro's own credit-normalized figure.
+ */
 export interface WireTokenUsage {
     uncachedInputTokens?: number;
     outputTokens?: number;
+    totalTokens?: number;
     cacheReadInputTokens?: number;
     cacheWriteInputTokens?: number;
+    contextUsagePercentage?: number;
+    normalizedTokenUsage?: number;
 }
 /**
  * Native reasoning frame. Kiro delivers model reasoning out of band rather than

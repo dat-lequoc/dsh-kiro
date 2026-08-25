@@ -17,7 +17,7 @@
  *
  * @module dsh-kiro/translate
  */
-import type { FinishReason, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { FinishReason, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm';
 import type { WireFrame, WireStopDetails } from './types.ts';
 /**
  * Withhold a visible response that may turn out to be nothing but the legacy
@@ -73,6 +73,28 @@ export declare class TextRouter {
     flush(): Routed[];
 }
 /**
+ * Price one call from the provider's own context measurement.
+ *
+ * Kiro does not send `metadataEvent.tokenUsage` on every route — this account's
+ * traffic never received one — but it does send `contextUsageEvent` on every
+ * request, and the wire schema treats `contextUsagePercentage` as part of token
+ * accounting. Scaling it by the model's advertised window recovers the absolute
+ * input size, which is what the harness needs to know how full the window is:
+ * without any usage the token meter has no provider anchor and prices the whole
+ * conversation from a local heuristic, so its compaction thresholds drift.
+ *
+ * Both local reference implementations do exactly this, for the same stated
+ * reason (`Kiro-Go/proxy/kiro.go:766`, `9router/open-sse/executors/kiro.js:1086`).
+ * The result is the provider's own measurement at the precision the provider
+ * reported it, not an exact per-request count: the output side has no such
+ * signal and is priced from the characters this stream actually emitted.
+ * @param percentage - the last `contextUsagePercentage` the stream reported.
+ * @param contextWindow - the selected model's advertised input capacity.
+ * @param outputCharacters - characters emitted as visible text and reasoning.
+ * @returns derived usage, or `undefined` when either input is unusable.
+ */
+export declare function contextUsageTokens(percentage: number | undefined, contextWindow: number | undefined, outputCharacters: number): TokenUsage | undefined;
+/**
  * Map one provider stop reason to the harness finish reason.
  *
  * Terminal protocol semantics are the provider's to state: a turn cut off by an
@@ -93,5 +115,5 @@ export declare function finishReasonOf(reason: string | undefined, details: Wire
  *   when supplied by Kiro, then one `finish`.
  * @throws `LlmError` for an in-band service exception frame or a malformed payload.
  */
-export declare function translate(frames: AsyncIterable<WireFrame>): AsyncGenerator<StreamChunk>;
+export declare function translate(frames: AsyncIterable<WireFrame>, contextWindow?: number): AsyncGenerator<StreamChunk>;
 export {};

@@ -174,7 +174,17 @@ The terminal `metadataEvent` supplies the finish reason: `END_TURN`, `TOOL_USE`,
 
 Nothing else has an accepted placement. `temperature`, `topP`, and stop sequences are not part of this operation's contract — an unadvertised property is rejected outright — so those options are ignored rather than sent.
 
-When — and only when — that same event carries `tokenUsage`, its counters are mapped to DSH's native buckets: uncached input, output, cache reads, and cache writes, with no estimates or double-counting. Kiro does not send `tokenUsage` on every route or deployment; where it is absent the adapter emits no usage at all and DSH shows session token metrics as unavailable rather than substituting a guess. Account credit usage on the settings card is a separate, plan-level figure and is never converted into per-request token counts.
+### Token accounting
+
+Two signals exist, and the adapter prefers the exact one.
+
+When `metadataEvent` carries `tokenUsage`, its counters map straight to DSH's native buckets: uncached input, output, cache reads, and cache writes, with no estimates or double-counting. `totalTokens` is used only to recover the uncached input when a route reports the total without that bucket.
+
+Kiro does not send `tokenUsage` on every route — no observed request on this account received one. It does send `contextUsageEvent` on every request, and the wire schema treats `contextUsagePercentage` as part of token accounting, so when no buckets arrive the adapter prices the call from that percentage times the model's advertised context window. This matters beyond display: DSH's token meter anchors its context accounting on provider usage, and with none it prices the whole conversation from a local heuristic, so compaction thresholds drift. Both reference implementations convert the percentage the same way and for the same reason.
+
+What that number is and is not: the input side is the provider's own measurement, at the precision the provider reported it, of how full the window is — not an exact per-request count. The output side has no provider signal at all and is scaled from the characters the stream emitted. Cache buckets are never invented; they appear only when Kiro reports them.
+
+Account credit usage on the settings card is a separate, plan-level figure and is never converted into per-request token counts.
 
 ## Why some Claude routes need a proxy
 
@@ -183,6 +193,8 @@ Kiro can authorize model families by request egress as well as account entitleme
 ## Errors
 
 The adapter maps provider failures to stable DSH codes: `AUTH`, `FORBIDDEN`, `RATE_LIMIT`, `INVALID_MODEL`, `INVALID_REQUEST`, `SERVER`, `TRANSPORT`, `ABORTED`, `TIMEOUT`, `STREAM_CLOSED`, `MALFORMED_RESPONSE`, and `EMPTY_RESPONSE`.
+
+An exhausted plan is mapped to `QUOTA`: Kiro reports it as HTTP 402, and sometimes as a 403 or a throttle whose reason names the monthly or daily allowance (`MONTHLY_REQUEST_COUNT`, `CREDIT_CONSUMPTION_RATE_EXCEEDED`). Retrying cannot help, so it must not read as a rate limit or a permission problem.
 
 A request Kiro rejects for exceeding its content bound is mapped to `CONTEXT_WINDOW_EXCEEDED` — matched from its `CONTENT_LENGTH_EXCEEDS_THRESHOLD` validation reason and the `Input is too long.` / `Prompt is too long.` wording its own client recognizes. That specific code is what makes DSH run emergency compaction and retry the turn; every other HTTP 400 stays `INVALID_REQUEST`, because compacting cannot fix a malformed request.
 

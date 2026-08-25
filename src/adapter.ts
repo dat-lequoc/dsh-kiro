@@ -12,6 +12,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   CONTEXT_WINDOW_EXCEEDED_CODE,
   isContextWindowExceededError,
+  isQuotaExceededError,
+  QUOTA_EXCEEDED_CODE,
   LlmAdapter,
   LlmError,
   ProviderRequestId,
@@ -63,6 +65,17 @@ const CONTEXT_OVERFLOW_REASON = 'CONTENT_LENGTH_EXCEEDS_THRESHOLD'
  * message that reaches recovery there also reaches it here.
  */
 const CONTEXT_OVERFLOW_MESSAGES = ['input is too long', 'prompt is too long'] as const
+/**
+ * Kiro's own reasons for an allowance that is spent rather than throttled. The
+ * request-count and monthly reasons come from its `ThrottlingExceptionReason`
+ * vocabulary; a 402 carries them too.
+ */
+const QUOTA_REASONS = [
+  'MONTHLY_REQUEST_COUNT',
+  'DAILY_REQUEST_COUNT',
+  'CREDIT_CONSUMPTION_RATE_EXCEEDED',
+  'FREE_TIER_LIMIT_REACHED',
+] as const
 
 /** Location of Kiro's native effort field in `additionalModelRequestFields`. */
 export type KiroEffortSchemaPath = 'output_config' | 'reasoning'
@@ -202,6 +215,18 @@ export function isKiroContextOverflow(body?: string): boolean {
 }
 
 /**
+ * Recognize a body that reports an exhausted account allowance rather than a
+ * transient throttle. Kiro's own vocabulary is checked first, then the harness's
+ * provider-neutral wording classifier.
+ * @param body - the response body text, when available.
+ * @returns true when the account's plan or credits are spent.
+ */
+export function isKiroQuotaExhausted(body?: string): boolean {
+  if (body === undefined || body.length === 0) return false
+  return QUOTA_REASONS.some(reason => body.includes(reason)) || isQuotaExceededError(body)
+}
+
+/**
  * Map a Kiro HTTP status and error body to a stable harness code.
  * @param status - status of a non-2xx response.
  * @param body - the response body text, when available.
@@ -210,11 +235,23 @@ export function isKiroContextOverflow(body?: string): boolean {
 export function httpErrorCode(status: number, body?: string): string {
   if (status === 401) return 'AUTH'
   if (status === 403) {
-    // Kiro reports both an unusable token and a revoked entitlement as 403;
-    // the bearer wording is the one the retry executor can act on.
-    return body !== undefined && body.includes('bearer token') ? 'AUTH' : 'FORBIDDEN'
+    // Kiro reports an unusable token, a revoked entitlement, and sometimes a
+    // spent allowance all as 403. The bearer wording is the one the retry
+    // executor can act on; an exhausted plan must not read as a permission
+    // problem, because the fix is billing rather than access.
+    if (body !== undefined && body.includes('bearer token')) return 'AUTH'
+    return isKiroQuotaExhausted(body) ? QUOTA_EXCEEDED_CODE : 'FORBIDDEN'
   }
-  if (status === 429) return 'RATE_LIMIT'
+  // Kiro reports an exhausted plan as 402 with reasons such as
+  // MONTHLY_REQUEST_COUNT or CREDIT_CONSUMPTION_RATE_EXCEEDED. That is a spent
+  // allowance, not a transient rate limit: retrying cannot help, and DSH has a
+  // canonical code so surfaces can say so instead of showing `HTTP_402`.
+  if (status === 402) return QUOTA_EXCEEDED_CODE
+  if (status === 429) {
+    // A throttle whose reason names the monthly or daily allowance is the plan
+    // running out, not a burst to back off from.
+    return isKiroQuotaExhausted(body) ? QUOTA_EXCEEDED_CODE : 'RATE_LIMIT'
+  }
   if (status === 400) {
     if (body !== undefined && body.includes('INVALID_MODEL_ID')) return 'INVALID_MODEL'
     // Compaction's emergency recovery is keyed to this exact code, so an
@@ -437,6 +474,11 @@ export class KiroAdapter extends LlmAdapter {
       })
     }
 
-    yield* translate(decodeFrames(response.body, onActivity))
+    // The context capacity the percentage is a fraction of: the live catalog's
+    // exact value when discovery supplied one, else the configured default.
+    yield* translate(
+      decodeFrames(response.body, onActivity),
+      selected?.contextWindow ?? connection.defaultContextWindow,
+    )
   }
 }

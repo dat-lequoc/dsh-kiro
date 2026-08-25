@@ -112,6 +112,14 @@ export declare function kiroTokenTypeHeaders(token: KiroToken): Record<string, s
  */
 export declare function isKiroContextOverflow(body?: string): boolean;
 /**
+ * Recognize a body that reports an exhausted account allowance rather than a
+ * transient throttle. Kiro's own vocabulary is checked first, then the harness's
+ * provider-neutral wording classifier.
+ * @param body - the response body text, when available.
+ * @returns true when the account's plan or credits are spent.
+ */
+export declare function isKiroQuotaExhausted(body?: string): boolean;
+/**
  * Map a Kiro HTTP status and error body to a stable harness code.
  * @param status - status of a non-2xx response.
  * @param body - the response body text, when available.

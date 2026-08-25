@@ -22,6 +22,7 @@ import { CONTEXT_WINDOW_EXCEEDED_CODE, CallId, EMPTY_RESPONSE_CODE, LlmError } f
 import type { ContentBlock, FinishReason, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
 import type {
   WireAssistantResponseEvent,
+  WireContextUsageEvent,
   WireFrame,
   WireMetadataEvent,
   WireReasoningContentEvent,
@@ -236,24 +237,34 @@ function tokenCount(value: unknown): number | undefined {
 
 /**
  * Convert Kiro's disjoint token buckets to DSH's native usage vocabulary.
- * Missing counters are zero, matching Kiro CLI's own stream parser. A present
- * malformed counter rejects the event instead of publishing misleading data,
- * and an event with no non-zero counter publishes nothing at all: usage DSH
- * never received must read as unavailable, not as zero.
+ *
+ * Missing counters are zero, matching Kiro CLI's own stream parser, and a
+ * present malformed counter rejects the event instead of publishing misleading
+ * data. `totalTokens` is used only to recover the uncached input when the
+ * provider reports the total without that bucket. An event with no non-zero
+ * counter publishes nothing at all: usage DSH never received must read as
+ * unavailable, not as zero.
  */
 function tokenUsageOf(value: WireTokenUsage | undefined): TokenUsage | undefined {
   if (value === undefined || typeof value !== 'object' || value === null) return undefined
   const fields = [
     value.uncachedInputTokens,
     value.outputTokens,
+    value.totalTokens,
     value.cacheReadInputTokens,
     value.cacheWriteInputTokens,
   ]
   if (fields.some(field => field !== undefined && tokenCount(field) === undefined)) return undefined
-  const inputTokens = tokenCount(value.uncachedInputTokens) ?? 0
   const outputTokens = tokenCount(value.outputTokens) ?? 0
   const cacheReadTokens = tokenCount(value.cacheReadInputTokens) ?? 0
   const cacheWriteTokens = tokenCount(value.cacheWriteInputTokens) ?? 0
+  const total = tokenCount(value.totalTokens)
+  // Prefer the bucket; fall back to what the total leaves once the other
+  // disjoint buckets are removed, so a total-only report still prices input.
+  const inputTokens = tokenCount(value.uncachedInputTokens)
+    ?? (total === undefined
+      ? 0
+      : Math.max(0, total - outputTokens - cacheReadTokens - cacheWriteTokens))
   if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0) {
     return undefined
   }
@@ -263,6 +274,43 @@ function tokenUsageOf(value: WireTokenUsage | undefined): TokenUsage | undefined
     ...cacheReadTokens > 0 ? { cacheReadTokens } : {},
     ...cacheWriteTokens > 0 ? { cacheWriteTokens } : {},
   }
+}
+
+/**
+ * Price one call from the provider's own context measurement.
+ *
+ * Kiro does not send `metadataEvent.tokenUsage` on every route — this account's
+ * traffic never received one — but it does send `contextUsageEvent` on every
+ * request, and the wire schema treats `contextUsagePercentage` as part of token
+ * accounting. Scaling it by the model's advertised window recovers the absolute
+ * input size, which is what the harness needs to know how full the window is:
+ * without any usage the token meter has no provider anchor and prices the whole
+ * conversation from a local heuristic, so its compaction thresholds drift.
+ *
+ * Both local reference implementations do exactly this, for the same stated
+ * reason (`Kiro-Go/proxy/kiro.go:766`, `9router/open-sse/executors/kiro.js:1086`).
+ * The result is the provider's own measurement at the precision the provider
+ * reported it, not an exact per-request count: the output side has no such
+ * signal and is priced from the characters this stream actually emitted.
+ * @param percentage - the last `contextUsagePercentage` the stream reported.
+ * @param contextWindow - the selected model's advertised input capacity.
+ * @param outputCharacters - characters emitted as visible text and reasoning.
+ * @returns derived usage, or `undefined` when either input is unusable.
+ */
+export function contextUsageTokens(
+  percentage: number | undefined,
+  contextWindow: number | undefined,
+  outputCharacters: number,
+): TokenUsage | undefined {
+  if (percentage === undefined || contextWindow === undefined) return undefined
+  if (!Number.isFinite(percentage) || percentage <= 0 || percentage > 100) return undefined
+  if (!Number.isInteger(contextWindow) || contextWindow <= 0) return undefined
+  const inputTokens = Math.round(percentage / 100 * contextWindow)
+  if (inputTokens <= 0) return undefined
+  // Four characters per token is the same coarse ratio the reference
+  // implementations use for the side the provider says nothing about.
+  const outputTokens = outputCharacters > 0 ? Math.max(1, Math.round(outputCharacters / 4)) : 0
+  return { inputTokens, outputTokens }
 }
 
 /**
@@ -369,7 +417,10 @@ export function finishReasonOf(
  *   when supplied by Kiro, then one `finish`.
  * @throws `LlmError` for an in-band service exception frame or a malformed payload.
  */
-export async function* translate(frames: AsyncIterable<WireFrame>): AsyncGenerator<StreamChunk> {
+export async function* translate(
+  frames: AsyncIterable<WireFrame>,
+  contextWindow?: number,
+): AsyncGenerator<StreamChunk> {
   const router = new TextRouter()
   const guard = new LegacyMarkerGuard()
   const order: OpenBlock[] = []
@@ -380,6 +431,8 @@ export async function* translate(frames: AsyncIterable<WireFrame>): AsyncGenerat
   let usage: TokenUsage | undefined
   let stopReason: string | undefined
   let stopDetails: WireStopDetails | undefined
+  let contextPercentage: number | undefined
+  let outputCharacters = 0
 
   function open(kind: OpenBlock['kind']): OpenBlock {
     const block: OpenBlock = { index: nextIndex++, kind, text: '' }
@@ -388,6 +441,7 @@ export async function* translate(frames: AsyncIterable<WireFrame>): AsyncGenerat
   }
 
   function* emitText(text: string): Generator<StreamChunk> {
+    outputCharacters += text.length
     if (textBlock === undefined) {
       textBlock = open('text')
       yield { type: 'block-start', index: textBlock.index, blockType: 'text' }
@@ -397,6 +451,7 @@ export async function* translate(frames: AsyncIterable<WireFrame>): AsyncGenerat
   }
 
   function* emitReasoning(text: string): Generator<StreamChunk> {
+    outputCharacters += text.length
     if (reasoningBlock === undefined) {
       reasoningBlock = open('reasoning')
       yield { type: 'block-start', index: reasoningBlock.index, blockType: 'reasoning' }
@@ -467,16 +522,32 @@ export async function* translate(frames: AsyncIterable<WireFrame>): AsyncGenerat
         const event = parsePayload<WireMetadataEvent>(frame)
         // Kiro treats streamed token metadata as last-write-wins.
         usage = tokenUsageOf(event.tokenUsage) ?? usage
+        // The terminal event repeats the percentage; keep it as a fallback for
+        // the routes that send this event but no token buckets.
+        const percentage = event.tokenUsage?.contextUsagePercentage
+        if (typeof percentage === 'number' && Number.isFinite(percentage)) {
+          contextPercentage = percentage
+        }
         if (typeof event.stopReason === 'string' && event.stopReason.length > 0) {
           stopReason = event.stopReason
           stopDetails = event.stopDetails
         }
         break
       }
+      case 'contextUsageEvent': {
+        const event = parsePayload<WireContextUsageEvent>(frame)
+        // The one usage signal every observed route does send. Last value wins:
+        // it describes the request as finally priced by the service.
+        if (typeof event.contextUsagePercentage === 'number'
+          && Number.isFinite(event.contextUsagePercentage)) {
+          contextPercentage = event.contextUsagePercentage
+        }
+        break
+      }
       default:
-        // contextUsageEvent, meteringEvent, followupPrompt, and future events
-        // carry no additional harness vocabulary; the protocol grows by
-        // adding cases here, never by surfacing unknown frames as content.
+        // meteringEvent, followupPrompt, and future events carry no additional
+        // harness vocabulary; the protocol grows by adding cases here, never by
+        // surfacing unknown frames as content.
         break
     }
   }
@@ -511,6 +582,8 @@ export async function* translate(frames: AsyncIterable<WireFrame>): AsyncGenerat
       },
     }
     : reason
-  if (usage !== undefined) yield { type: 'usage', usage }
+  const priced = usage
+    ?? contextUsageTokens(contextPercentage, contextWindow, outputCharacters)
+  if (priced !== undefined) yield { type: 'usage', usage: priced }
   yield { type: 'finish', reason: settled }
 }

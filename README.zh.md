@@ -167,7 +167,17 @@ Kiro 没有独立 system 槽位，因此 harness system prompt 会放入最早�
 
 其余参数没有可用位置。`temperature`、`topP` 与 stop 序列不属于该操作的契约（发送未公布的属性会直接被拒绝），因此这些选项会被忽略而不是发送。
 
-只有当同一事件携带 `tokenUsage` 时，其计数才会映射为 DSH 原生 token usage：未缓存输入、输出、缓存读取与缓存写入，且不估算、不重复计数。Kiro 并非在所有路由或部署上都发送 `tokenUsage`；缺失时适配器不会产生任何用量数据，DSH 会将会话 token 指标显示为不可用，而不是用推测值代替。设置页中的账号 credits 使用量属于套餐层面的独立数据，绝不会换算为单次请求的 token 数。
+### Token 统计
+
+存在两种信号，适配器优先使用精确的那一种。
+
+当 `metadataEvent` 携带 `tokenUsage` 时，其计数直接映射为 DSH 原生 token usage：未缓存输入、输出、缓存读取与缓存写入，不估算、不重复计数。`totalTokens` 仅用于在某些路由只上报总数而缺少未缓存输入时反推该项。
+
+Kiro 并非在所有路由上都发送 `tokenUsage`——本账号的所有实测请求都没有收到。但它在每次请求都会发送 `contextUsageEvent`，而 wire schema 也把 `contextUsagePercentage` 视为 token 统计的一部分；因此在没有精确计数时，适配器会用该百分比乘以模型公布的上下文窗口来定价。这不只影响展示：DSH 的 token meter 需要以上游用量为锚点，缺失时只能整段用本地启发式估算，压缩阈值会随之漂移。两个参考实现都以相同方式、出于相同原因转换该百分比。
+
+需要明确的是：输入侧是上游自己给出的「窗口占用」测量值，精度取决于上游上报的精度，并非单次请求的精确计数；输出侧完全没有上游信号，由本次流式输出的字符数换算。缓存分项绝不会凭空生成，只有 Kiro 上报时才会出现。
+
+设置页中的账号 credits 使用量属于套餐层面的独立数据，绝不会换算为单次请求的 token 数。
 
 ## 为什么部分 Claude 路由需要代理
 
@@ -176,6 +186,8 @@ Kiro 可能同时按账号权益与请求出口授权模型系列。未授权出
 ## 错误
 
 适配器会把上游失败映射为稳定的 DSH 错误码：`AUTH`、`FORBIDDEN`、`RATE_LIMIT`、`INVALID_MODEL`、`INVALID_REQUEST`、`SERVER`、`TRANSPORT`、`ABORTED`、`TIMEOUT`、`STREAM_CLOSED`、`MALFORMED_RESPONSE`、`EMPTY_RESPONSE`。
+
+套餐额度用尽会映射为 `QUOTA`：Kiro 可能以 HTTP 402 上报，有时也用 403 或原因为月度/每日额度的限流（`MONTHLY_REQUEST_COUNT`、`CREDIT_CONSUMPTION_RATE_EXCEEDED`）。重试无法解决，因此不能显示为速率限制或权限问题。
 
 当 Kiro 因内容超限拒绝请求时，会映射为 `CONTEXT_WINDOW_EXCEEDED`——依据其 `CONTENT_LENGTH_EXCEEDS_THRESHOLD` 校验原因以及官方客户端同样识别的 `Input is too long.` / `Prompt is too long.` 文案。只有这个错误码会触发 DSH 的紧急压缩并重试该轮；其他 HTTP 400 仍是 `INVALID_REQUEST`，因为压缩无法修复格式错误的请求。
 
