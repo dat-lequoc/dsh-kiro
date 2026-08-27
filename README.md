@@ -12,21 +12,6 @@ The bundle registers the `kiro` provider route and mounts itself when installed.
 
 This is an independent integration and is not affiliated with or endorsed by AWS or Kiro. Kiro and its logo are Amazon trademarks; see [NOTICE.md](NOTICE.md).
 
-## Features
-
-- Sign in from **Settings → Kiro** with AWS Builder ID, IAM Identity Center, Google, or GitHub.
-- Import a Kiro refresh token, API key, or CLIProxyAPI-compatible Microsoft external-IdP credential.
-- Sign in with the same methods from a terminal using the included `kiro-login` command.
-- Discover and persist the account's CodeWhisperer profile ARN so refreshed tokens keep the correct profile.
-- Fall back to Kiro IDE/CLI's existing `~/.aws/sso/cache` sign-in when no plugin-managed login exists.
-- Query Kiro's `ListAvailableModels` endpoint so the model picker reflects the signed-in account (Opus, Sonnet, Haiku, and available open-weight routes).
-- Show the account plan, credit usage, and reset date, with a compact persistent model allowlist.
-- Auto-discover each model's reasoning efforts, including `none`, `xhigh`, and `max` where Kiro offers them.
-- Stream text, reasoning, and tool calls from Kiro's Amazon EventStream protocol.
-- Send images to every model whose catalog entry accepts them, which unlocks image attachments and the harness's own image-reading tool.
-- Support direct egress or an authenticated HTTP/HTTPS `CONNECT` proxy.
-- Hot-reload `llm-kiro` settings without restarting DSH.
-
 ## Install
 
 ```sh
@@ -43,6 +28,21 @@ pnpm dsh --profile web
 ```
 
 Built `lib/` artifacts are committed, so a GitHub install does not need to execute a dependency build script.
+
+## Features
+
+- Sign in from **Settings → Kiro** with AWS Builder ID, IAM Identity Center, Google, or GitHub.
+- Import a Kiro refresh token, API key, or CLIProxyAPI-compatible Microsoft external-IdP credential.
+- Sign in with the same methods from a terminal using the included `kiro-login` command.
+- Discover and persist the account's CodeWhisperer profile ARN so refreshed tokens keep the correct profile.
+- Fall back to Kiro IDE/CLI's existing `~/.aws/sso/cache` sign-in when no plugin-managed login exists.
+- Query Kiro's `ListAvailableModels` endpoint so the model picker reflects the signed-in account (Opus, Sonnet, Haiku, and available open-weight routes).
+- Show the account plan, credit usage, and reset date, with a compact persistent model allowlist.
+- Auto-discover each model's reasoning efforts, including `none`, `xhigh`, and `max` where Kiro offers them.
+- Stream text, reasoning, and tool calls from Kiro's Amazon EventStream protocol.
+- Send images to every model whose catalog entry accepts them, which unlocks image attachments and the harness's own image-reading tool.
+- Support direct egress or an authenticated HTTP/HTTPS `CONNECT` proxy.
+- Hot-reload `llm-kiro` settings without restarting DSH.
 
 ## Sign in
 
