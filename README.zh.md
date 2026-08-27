@@ -12,22 +12,6 @@
 
 这是一个独立集成项目，与 AWS 或 Kiro 没有关联，也未获其赞助或认可。Kiro 及其徽标是 Amazon 的商标；详见 [NOTICE.md](NOTICE.md)。
 
-## 功能
-
-- 在 **Settings → Kiro** 中使用 AWS Builder ID、IAM Identity Center、Google 或 GitHub 登录。
-- 导入 Kiro refresh token、API key 或兼容 CLIProxyAPI 的 Microsoft external-IdP 凭据。
-- 导入会报告实际验证到的内容：API key 先与线上模型目录校验，因此页面可以显示`凭据已验证 · 19 个模型可用`；refresh token 因为换取到了真实 access token 而同样报告已验证；external-IdP JSON 只在本地做格式转换，因此显示`凭据已保存`，不会声称做过并不存在的校验。成功后对话框自动关闭，页面上粘贴的密钥被清除，并按当前生效的账号重新读取使用量卡片。
-- 使用随包提供的 `kiro-login` 命令从终端完成同类登录。
-- 自动发现并保存账号的 CodeWhisperer profile ARN，使刷新后的 token 仍使用正确 profile。
-- 没有插件自管登录时，自动回退到 Kiro IDE/CLI 的 `~/.aws/sso/cache` 凭据。
-- 调用 Kiro `ListAvailableModels`，让模型选择器反映当前账号实际可用的 Opus、Sonnet、Haiku 与开放权重模型。
-- 显示账号套餐、credits 使用量和重置日期，并提供紧凑、可持久化的模型启用列表。
-- 自动发现每个模型的 reasoning effort，包括 Kiro 提供的 `none`、`xhigh` 与 `max`。
-- 解码 Kiro Amazon EventStream 中的文本、推理与工具调用。
-- 向目录声明接受图片的所有模型发送图片，从而启用图片附件与 harness 自带的读图工具。
-- 支持直连或带认证的 HTTP/HTTPS `CONNECT` 代理。
-- `llm-kiro` 设置无需重启即可热更新。
-
 ## 安装
 
 ```sh
@@ -44,6 +28,22 @@ pnpm dsh --profile web
 ```
 
 仓库已提交构建后的 `lib/`，所以从 GitHub 安装时不需要执行依赖构建脚本。
+
+## 功能
+
+- 在 **Settings → Kiro** 中使用 AWS Builder ID、IAM Identity Center、Google 或 GitHub 登录。
+- 导入 Kiro refresh token、API key 或兼容 CLIProxyAPI 的 Microsoft external-IdP 凭据。
+- 导入会报告实际验证到的内容：API key 先与线上模型目录校验，因此页面可以显示`凭据已验证 · 19 个模型可用`；refresh token 因为换取到了真实 access token 而同样报告已验证；external-IdP JSON 只在本地做格式转换，因此显示`凭据已保存`，不会声称做过并不存在的校验。成功后对话框自动关闭，页面上粘贴的密钥被清除，并按当前生效的账号重新读取使用量卡片。
+- 使用随包提供的 `kiro-login` 命令从终端完成同类登录。
+- 自动发现并保存账号的 CodeWhisperer profile ARN，使刷新后的 token 仍使用正确 profile。
+- 没有插件自管登录时，自动回退到 Kiro IDE/CLI 的 `~/.aws/sso/cache` 凭据。
+- 调用 Kiro `ListAvailableModels`，让模型选择器反映当前账号实际可用的 Opus、Sonnet、Haiku 与开放权重模型。
+- 显示账号套餐、credits 使用量和重置日期，并提供紧凑、可持久化的模型启用列表。
+- 自动发现每个模型的 reasoning effort，包括 Kiro 提供的 `none`、`xhigh` 与 `max`。
+- 解码 Kiro Amazon EventStream 中的文本、推理与工具调用。
+- 向目录声明接受图片的所有模型发送图片，从而启用图片附件与 harness 自带的读图工具。
+- 支持直连或带认证的 HTTP/HTTPS `CONNECT` 代理。
+- `llm-kiro` 设置无需重启即可热更新。
 
 ## 登录
 
