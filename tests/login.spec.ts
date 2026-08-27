@@ -270,7 +270,7 @@ describe('additional Kiro auth methods', () => {
         credentials: { accessToken: 'api-key', authMethod: 'api_key', region: 'us-west-2' },
         models: 1,
       })
-    expect(request.mock.calls[0]?.[0]).toContain('https://q.us-west-2.amazonaws.com/ListAvailableModels')
+    expect(request.mock.calls[0]?.[0]).toContain('https://q.us-east-1.amazonaws.com/ListAvailableModels')
     expect(request.mock.calls[0]?.[1]).toMatchObject({ TokenType: 'API_KEY' })
   })
 

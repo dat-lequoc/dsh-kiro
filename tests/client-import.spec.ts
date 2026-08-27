@@ -91,8 +91,10 @@ describe('API key import reports its evidence', () => {
     expect(verified.credentials.accessToken).toBe('key-value')
     expect(verified.credentials.authMethod).toBe('api_key')
     expect(verified.credentials.region).toBe('us-west-2')
-    // The check is a real catalog call carrying the key as an API-key token.
-    expect(seen[0]?.url).toContain('q.us-west-2.amazonaws.com/ListAvailableModels')
+    // The check is a real catalog call carrying the key as an API-key token,
+    // resolved through the published endpoint table (us-west-2 has no Q API
+    // hostname and falls back to the default endpoint).
+    expect(seen[0]?.url).toContain('q.us-east-1.amazonaws.com/ListAvailableModels')
     expect(seen[0]?.headers.TokenType).toBe('API_KEY')
   })
 

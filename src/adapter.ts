@@ -37,6 +37,7 @@ import { decodeFrames } from './eventstream.ts'
 import { serializeRequest } from './serialize.ts'
 import type { WireImageBlock } from './types.ts'
 import type { RequestDefaults } from './serialize.ts'
+import { kiroApiEndpoint } from './endpoint.ts'
 import { post } from './transport.ts'
 import { translate } from './translate.ts'
 import type { KiroToken } from './auth.ts'
@@ -152,7 +153,10 @@ export interface KiroCatalogModel {
  * makes a configuration change reach the next request without re-registration.
  */
 export interface KiroConnectionOptions {
-  /** Region selecting the `q.<region>.amazonaws.com` endpoint. */
+  /**
+   * Region selecting the Kiro endpoint; a region the Amazon Q API does not
+   * serve falls back to the default endpoint. Omitted follows the token file.
+   */
   region?: string
   /**
    * Proxy egress for every Kiro request, or `undefined` for a direct
@@ -214,11 +218,17 @@ export interface AttachmentStore {
   ) => Promise<{ data: Uint8Array; mediaType: ImageMediaType }>
 }
 
-/** Select the auth-specific upstream surface Kiro accepts. */
-export function kiroRequestEndpoint(token: KiroToken, region: string): string {
-  return token.authMethod === 'idc' || token.authMethod === 'external_idp'
-    ? `https://codewhisperer.${region}.amazonaws.com/generateAssistantResponse`
-    : `https://q.${region}.amazonaws.com/generateAssistantResponse`
+/** Select the upstream surface Kiro accepts for one request region. */
+export function kiroRequestEndpoint(_token: KiroToken, region: string): string {
+  // The installed Kiro CLI addresses every auth method through the regional
+  // Amazon Q API (`q.<region>.amazonaws.com`), which exists only in the two
+  // regions of its endpoint table; any other region falls back to the default
+  // endpoint. Deriving the host from the credential's own region was the bug:
+  // an IAM Identity Center start URL can live in a region the Q API does not
+  // serve (`ap-southeast-1`), and `codewhisperer.<region>` has no DNS record
+  // there — the transport then fails with "Kiro request to
+  // codewhisperer.<region>.amazonaws.com failed" right after a successful login.
+  return `${kiroApiEndpoint(region).url}/generateAssistantResponse`
 }
 
 /** Add the token discriminator required by API-key and external-IdP auth. */
@@ -579,7 +589,11 @@ export class KiroAdapter extends LlmAdapter {
         'content-type': 'application/json',
         accept: 'application/vnd.amazon.eventstream',
         authorization: `Bearer ${token.accessToken}`,
-        ...url.includes('://codewhisperer.') ? { 'x-amz-target': CODEWHISPERER_TARGET } : {},
+        // The streaming operation is discriminated by its target header on the
+        // shared Amazon Q frontend, exactly as the installed Kiro CLI sends it;
+        // the older CodeWhisperer hostname this used to be conditioned on is an
+        // alias of the same us-east-1 frontend.
+        'x-amz-target': CODEWHISPERER_TARGET,
         ...kiroTokenTypeHeaders(token),
         'x-amzn-kiro-agent-mode': 'vibe',
         // Kiro authorizes by client identity: a request whose `user-agent`

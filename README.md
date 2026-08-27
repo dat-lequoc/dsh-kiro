@@ -136,7 +136,7 @@ Every field is optional:
 | Field | Default | Meaning |
 |---|---|---|
 | `proxyUrl` | direct | HTTP/HTTPS proxy for Kiro and OIDC requests; credentials in the URL are supported. |
-| `region` | signed-in token region | Selects the `q.<region>.amazonaws.com` endpoint. |
+| `region` | signed-in token region | Selects the Kiro endpoint; regions the Amazon Q API does not serve (the token's SSO region often is one) fall back to the default `q.us-east-1.amazonaws.com`. |
 | `profileArn` | account default | CodeWhisperer profile used for requests and model discovery. |
 | `thinking` | `enabled` | `disabled` suppresses reasoning controls and native effort fields. |
 | `reasoningEffort` | model's live default | Optional override: `none`, `off`, `low`, `medium`, `high`, `xhigh`, or `max`; unsupported values are rejected for that model. |

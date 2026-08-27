@@ -129,7 +129,7 @@ llm-kiro:
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `proxyUrl` | 直连 | Kiro 与 OIDC 请求使用的 HTTP/HTTPS 代理，可在 URL 中包含凭据。 |
-| `region` | 已登录 token 的 region | 选择 `q.<region>.amazonaws.com`。 |
+| `region` | 已登录 token 的 region | 选择 Kiro 端点；Amazon Q API 未覆盖的 region（token 的 SSO region 常常如此）会回退到默认的 `q.us-east-1.amazonaws.com`。 |
 | `profileArn` | 账号默认值 | 请求与模型发现使用的 CodeWhisperer profile。 |
 | `thinking` | `enabled` | `disabled` 会隐藏推理控制并停止发送原生 effort 字段。 |
 | `reasoningEffort` | 模型实时默认值 | 可选覆盖：`none`、`off`、`low`、`medium`、`high`、`xhigh` 或 `max`；模型不支持时会拒绝该值。 |

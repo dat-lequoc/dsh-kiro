@@ -5,6 +5,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { clearTokenCache, kiroAuthMethod } from './auth.ts'
 import type { KiroAuthMethod } from './auth.ts'
+import { kiroApiEndpoint } from './endpoint.ts'
 import { normalizeExternalIdpCredentials } from './external-idp.ts'
 import { assertKiroProfileArn } from './profile.ts'
 import { assertKiroRegion } from './region.ts'
@@ -482,7 +483,9 @@ export async function importApiKey(
   const accessToken = apiKey.trim()
   if (accessToken.length === 0) throw new Error('Kiro API key is required')
   const region = assertKiroRegion(regionValue?.trim() || 'us-east-1')
-  const url = new URL(`https://q.${region}.amazonaws.com/ListAvailableModels`)
+  // The catalog lives on the published Amazon Q endpoints; the chosen region
+  // may name no real host, so it resolves through the endpoint table.
+  const url = new URL(`${kiroApiEndpoint(region).url}/ListAvailableModels`)
   url.searchParams.set('origin', 'AI_EDITOR')
   const response = await requestGet(url.toString(), {
     authorization: `Bearer ${accessToken}`,

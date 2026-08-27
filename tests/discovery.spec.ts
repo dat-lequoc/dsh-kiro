@@ -112,7 +112,7 @@ describe('Kiro model discovery', () => {
     await expect(discovery.list(connection, signal)).resolves.toHaveLength(1)
     expect(request).toHaveBeenCalledTimes(1)
     const [url, headers, proxy] = request.mock.calls[0] as [string, Record<string, string>, string]
-    expect(url).toContain('https://codewhisperer.us-east-1.amazonaws.com/ListAvailableModels?')
+    expect(url).toContain('https://q.us-east-1.amazonaws.com/ListAvailableModels?')
     expect(url).toContain('profileArn=arn%3Aaws%3Acodewhisperer')
     expect(headers.authorization).toBe('Bearer access')
     expect(headers['user-agent']).toContain('KiroIDE')
@@ -141,10 +141,42 @@ describe('Kiro model discovery', () => {
     const withoutProfile = { ...connection, profileArn: undefined } as unknown as KiroConnectionOptions
     await discovery.list(withoutProfile, new AbortController().signal)
     expect(profiles.mock.calls[0]?.[0]).toBe(
-      'https://codewhisperer.us-east-1.amazonaws.com/ListAvailableProfiles',
+      'https://q.us-east-1.amazonaws.com/ListAvailableProfiles',
     )
+    expect(profiles.mock.calls[0]?.[1]).toEqual({ max_results: 50 })
     expect(request.mock.calls[0]?.[0]).toContain('https://q.eu-central-1.amazonaws.com/ListAvailableModels?')
     expect(request.mock.calls[0]?.[0]).toContain('profileArn=arn%3Aaws%3Acodewhisperer%3Aeu-central-1')
+  })
+
+  it('finds the profile through a published endpoint when the SSO region has none', async () => {
+    // An IDC credential records the SSO region (e.g. ap-southeast-1), where no
+    // Q API hostname exists. Discovery must still reach the published regions
+    // and report the account's us-east-1 profile instead of failing the request.
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      body: { models: [{ modelId: 'claude-opus-4.8' }] },
+    })
+    const profiles = vi.fn().mockResolvedValue({
+      status: 200,
+      body: {
+        profiles: [{ arn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/default' }],
+      },
+    })
+    const discovery = new KiroModelDiscovery({
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'ap-southeast-1', expiresAt: Date.now() + 60_000, authMethod: 'idc',
+      }),
+      requestJson: request,
+      profileRequestJson: profiles,
+    })
+    const withoutProfile = { ...connection, profileArn: undefined } as unknown as KiroConnectionOptions
+    await discovery.list(withoutProfile, new AbortController().signal)
+    expect(profiles.mock.calls[0]?.[0]).toBe(
+      'https://q.us-east-1.amazonaws.com/ListAvailableProfiles',
+    )
+    expect(profiles.mock.calls[0]?.[1]).toEqual({ max_results: 50 })
+    expect(request.mock.calls[0]?.[0]).toContain('https://q.us-east-1.amazonaws.com/ListAvailableModels?')
+    expect(request.mock.calls[0]?.[0]).toContain('profileArn=arn%3Aaws%3Acodewhisperer%3Aus-east-1')
   })
 
   it('reads the advertised max_tokens bounds from the live schema', () => {
