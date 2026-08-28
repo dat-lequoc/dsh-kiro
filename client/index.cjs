@@ -245,7 +245,12 @@ window.__ModuleLoader__.load({
         if (observer) observer.disconnect()
         scope = target
         observer = new MutationObserver(schedule)
-        observer.observe(target, { childList: true, subtree: true })
+        // `attributes` matters as much as `childList`: React owns this svg and
+        // re-renders the shell's own gear into the SAME element whenever the
+        // nav re-renders, which mutates attributes and inner markup without
+        // adding or removing the node. A childList-only observer never fires
+        // for that, so the mark would be installed once and then silently lost.
+        observer.observe(target, { attributes: true, childList: true, subtree: true })
       }
 
       const apply = () => {

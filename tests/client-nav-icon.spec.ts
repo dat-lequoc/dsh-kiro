@@ -68,6 +68,13 @@ function append(parent: FakeNode, child: FakeNode): FakeNode {
   return child
 }
 
+/** Detach a child, as the shell does when the settings panel closes. */
+function remove(parent: FakeNode, child: FakeNode): void {
+  const at = parent.children.indexOf(child)
+  if (at >= 0) parent.children.splice(at, 1)
+  child.parent = undefined
+}
+
 /** Collect every node of a tree, so `document.querySelectorAll` can filter it. */
 function flatten(root: FakeNode): FakeNode[] {
   const all: FakeNode[] = []
@@ -194,7 +201,7 @@ describe('settings nav icon lifecycle', () => {
     // No panel yet: the wide scope is the only way to notice it mount.
     expect(observers).toHaveLength(1)
     expect(observers[0]?.targets).toEqual([root])
-    expect(observers[0]?.options).toEqual({ childList: true, subtree: true })
+    expect(observers[0]?.options).toEqual({ attributes: true, childList: true, subtree: true })
 
     const { nav } = mountPanel(root)
     observers[0]?.fire()
@@ -227,5 +234,55 @@ describe('settings nav icon lifecycle', () => {
     const dispose = start()
     dispose()
     expect(observers.every(entry => entry.disconnected)).toBe(true)
+  })
+
+  it('patches the glyph again after the panel is closed and reopened', () => {
+    // The shell mounts and unmounts the whole panel, so the nav the observer
+    // narrowed to stops existing on close. Narrowing must not be a one-way
+    // door: a reopened panel gets a brand-new svg that still needs the mark,
+    // and the reported symptom is the generic gear coming back.
+    start()
+    const first = mountPanel(root)
+    observers[0]?.fire()
+    expect(first.svg.getAttribute('viewBox')).toBe('0 0 1200 1200')
+
+    // Close: the shell detaches the panel subtree.
+    remove(root, first.nav)
+    observers[observers.length - 1]?.fire()
+
+    // Reopen with a fresh, unpatched glyph.
+    const second = mountPanel(root)
+    observers[observers.length - 1]?.fire()
+    expect(second.svg.getAttribute('viewBox')).toBe('0 0 1200 1200')
+    expect(second.svg.innerHTML).toContain('fill="#9046FF"')
+  })
+
+  it('observes attributes, not just childList, so a re-render is noticed', () => {
+    // React owns this svg and re-renders the nav on open, on active-row change,
+    // and on any parent state change, writing the shell's own gear back into
+    // the SAME element. childList/subtree mutations never fire for that: the
+    // node is not added or removed, only its attributes and inner markup
+    // change. Without attribute observation the mark is installed once and
+    // then silently lost — the generic gear the screenshot shows.
+    start()
+    mountPanel(root)
+    observers[0]?.fire()
+    const narrowed = observers[observers.length - 1]
+    expect(narrowed?.options.attributes).toBe(true)
+  })
+
+  it('reinstalls the mark when the shell re-renders its own glyph back', () => {
+    start()
+    const { svg } = mountPanel(root)
+    observers[0]?.fire()
+    expect(svg.getAttribute('viewBox')).toBe('0 0 1200 1200')
+
+    // React re-renders IconSettingsOutline16 into the same node.
+    svg.setAttribute('viewBox', '0 0 16 16')
+    svg.innerHTML = '<g><path d="M14 5.5"/></g>'
+    observers[observers.length - 1]?.fire()
+
+    expect(svg.getAttribute('viewBox')).toBe('0 0 1200 1200')
+    expect(svg.innerHTML).toContain('fill="#9046FF"')
   })
 })
