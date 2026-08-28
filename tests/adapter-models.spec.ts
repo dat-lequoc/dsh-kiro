@@ -63,4 +63,10 @@ describe('Kiro model publication', () => {
     await expect(instance.listModels('kiro')).resolves.toEqual([expect.objectContaining({ id: 'thinking' })])
     await expect(instance.resolveModel('kiro', 'plain')).resolves.toMatchObject({ id: 'plain' })
   })
+
+  it('implements the prepared-call contract required by current DSH hosts', async () => {
+    const prepared = await adapter().prepareCall('kiro', 'thinking')
+    expect(prepared.model).toMatchObject({ provider: 'kiro', id: 'thinking' })
+    expect(prepared.stream).toBeTypeOf('function')
+  })
 })

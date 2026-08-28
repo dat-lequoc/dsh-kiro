@@ -74,6 +74,22 @@ describe('Kiro usage', () => {
     expect(service.current({ ...connection, profileArn: undefined })).toMatchObject({ plan: 'Kiro Pro' })
   })
 
+  it('uses the Kiro home region instead of an IDC credential region', async () => {
+    const getRequest = vi.fn().mockResolvedValue({ status: 200, body: response })
+    const service = new KiroUsageService({
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'ap-southeast-1', expiresAt: Date.now() + 60_000, authMethod: 'idc',
+      }),
+      getRequest,
+    })
+    await service.get(
+      { ...connection, region: undefined, profileArn: undefined },
+      new AbortController().signal,
+    )
+    expect(getRequest.mock.calls[0]?.[0])
+      .toContain('codewhisperer.us-east-1.amazonaws.com/getUsageLimits?')
+  })
+
   it('falls back to the AWS JSON operation and preserves the last successful cache', async () => {
     const getRequest = vi.fn()
       .mockResolvedValueOnce({ status: 403, body: {} })

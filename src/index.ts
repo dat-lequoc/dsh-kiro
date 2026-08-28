@@ -40,6 +40,7 @@ export {
   DEFAULT_CONTEXT_WINDOW,
   DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   KiroAdapter,
+  kiroServiceRegion,
   httpErrorCode,
 } from './adapter.ts'
 export type { KiroAdapterOptions, KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
@@ -165,7 +166,7 @@ export interface Config {
    * models answer without one. An invalid value fails plugin loading.
    */
   proxyUrl?: string
-  /** Region selecting the endpoint; omitted follows the signed-in token file. */
+  /** Kiro service region; IdC omission defaults to us-east-1 instead of its OIDC region. */
   region?: string
   /** CodeWhisperer profile ARN; omitted uses the account default. */
   profileArn?: string

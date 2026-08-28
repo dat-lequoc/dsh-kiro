@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { kiroRequestEndpoint, kiroTokenTypeHeaders } from '../src/adapter.ts'
+import { kiroRequestEndpoint, kiroServiceRegion, kiroTokenTypeHeaders } from '../src/adapter.ts'
 import type { KiroToken } from '../src/auth.ts'
 
 function token(authMethod: KiroToken['authMethod']): KiroToken {
@@ -7,6 +7,15 @@ function token(authMethod: KiroToken['authMethod']): KiroToken {
 }
 
 describe('auth-specific Kiro request routing', () => {
+  it('does not reuse an IDC credential region as the Kiro service region', () => {
+    const idc = { ...token('idc'), region: 'ap-southeast-1' }
+    expect(kiroServiceRegion({}, idc)).toBe('us-east-1')
+    expect(kiroServiceRegion({ region: 'eu-central-1' }, idc)).toBe('eu-central-1')
+    expect(kiroServiceRegion({
+      profileArn: 'arn:aws:codewhisperer:eu-central-1:123456789012:profile/idc',
+    }, idc)).toBe('eu-central-1')
+  })
+
   it('uses CodeWhisperer for IDC and external IdP tokens', () => {
     expect(kiroRequestEndpoint(token('idc'), 'eu-central-1'))
       .toBe('https://codewhisperer.eu-central-1.amazonaws.com/generateAssistantResponse')

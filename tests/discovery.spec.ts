@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { KiroConnectionOptions } from '../src/adapter.ts'
 import {
+  discoverKiroProfileArn,
   KiroModelDiscovery,
   modelSupportsThinking,
   parseAvailableModels,
@@ -22,6 +23,77 @@ const connection = {
 } as unknown as KiroConnectionOptions
 
 describe('Kiro model discovery', () => {
+  it('does not probe an IDC credential region when no service region is configured', async () => {
+    const request = vi.fn().mockResolvedValue({ status: 404, body: {} })
+    await expect(discoverKiroProfileArn(
+      { ...connection, region: undefined },
+      {
+        accessToken: 'access',
+        region: 'ap-southeast-1',
+        expiresAt: Date.now() + 60_000,
+        authMethod: 'idc',
+      },
+      new AbortController().signal,
+      request,
+    )).resolves.toBeUndefined()
+
+    expect(request.mock.calls.map(call => call[0])).toEqual([
+      'https://codewhisperer.us-east-1.amazonaws.com/ListAvailableProfiles',
+      'https://codewhisperer.us-east-1.amazonaws.com',
+    ])
+  })
+
+  it('only tries a fallback region when the preferred endpoint is unreachable', async () => {
+    const request = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('us-east-1')) return Promise.reject(new Error('unreachable'))
+      return Promise.resolve({
+        status: 200,
+        body: {
+          profiles: [{ arn: 'arn:aws:codewhisperer:eu-central-1:123456789012:profile/default' }],
+        },
+      })
+    })
+    await expect(discoverKiroProfileArn(
+      { ...connection, region: undefined },
+      {
+        accessToken: 'access',
+        region: 'ap-southeast-1',
+        expiresAt: Date.now() + 60_000,
+        authMethod: 'idc',
+      },
+      new AbortController().signal,
+      request,
+    )).resolves.toBe('arn:aws:codewhisperer:eu-central-1:123456789012:profile/default')
+    expect(request.mock.calls.map(call => call[0])).toEqual([
+      'https://codewhisperer.us-east-1.amazonaws.com/ListAvailableProfiles',
+      'https://codewhisperer.us-east-1.amazonaws.com',
+      'https://codewhisperer.eu-central-1.amazonaws.com/ListAvailableProfiles',
+    ])
+  })
+
+  it('prefers a profile in the service region over the IDC credential region', async () => {
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      body: {
+        profiles: [
+          { arn: 'arn:aws:codewhisperer:ap-southeast-1:123456789012:profile/auth-region' },
+          { arn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/service-region' },
+        ],
+      },
+    })
+    await expect(discoverKiroProfileArn(
+      { ...connection, region: undefined },
+      {
+        accessToken: 'access',
+        region: 'ap-southeast-1',
+        expiresAt: Date.now() + 60_000,
+        authMethod: 'idc',
+      },
+      new AbortController().signal,
+      request,
+    )).resolves.toBe('arn:aws:codewhisperer:us-east-1:123456789012:profile/service-region')
+  })
+
   it('parses live model names, token limits, and reasoning capability', () => {
     expect(parseAvailableModels({
       models: [
@@ -145,6 +217,27 @@ describe('Kiro model discovery', () => {
     )
     expect(request.mock.calls[0]?.[0]).toContain('https://q.eu-central-1.amazonaws.com/ListAvailableModels?')
     expect(request.mock.calls[0]?.[0]).toContain('profileArn=arn%3Aaws%3Acodewhisperer%3Aeu-central-1')
+  })
+
+  it('lists models without a profile when the optional profile probe fails', async () => {
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      body: { models: [{ modelId: 'gpt-5.6-sol' }] },
+    })
+    const discovery = new KiroModelDiscovery({
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'ap-southeast-1', expiresAt: Date.now() + 60_000, authMethod: 'idc',
+      }),
+      requestJson: request,
+      profileRequestJson: vi.fn().mockRejectedValue(new Error('profile transport failed')),
+    })
+    const withoutProfile = { ...connection, region: undefined, profileArn: undefined } as KiroConnectionOptions
+    await expect(discovery.list(withoutProfile, new AbortController().signal))
+      .resolves.toEqual([expect.objectContaining({ id: 'gpt-5.6-sol' })])
+    expect(request.mock.calls[0]?.[0]).toContain(
+      'https://codewhisperer.us-east-1.amazonaws.com/ListAvailableModels?',
+    )
+    expect(request.mock.calls[0]?.[0]).not.toContain('profileArn=')
   })
 
   it('reads the advertised max_tokens bounds from the live schema', () => {

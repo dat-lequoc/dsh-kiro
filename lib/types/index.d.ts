@@ -17,7 +17,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm';
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts';
-export { DEFAULT_CONTEXT_WINDOW, DEFAULT_STREAM_IDLE_TIMEOUT_MS, KiroAdapter, httpErrorCode, } from './adapter.ts';
+export { DEFAULT_CONTEXT_WINDOW, DEFAULT_STREAM_IDLE_TIMEOUT_MS, KiroAdapter, kiroServiceRegion, httpErrorCode, } from './adapter.ts';
 export type { KiroAdapterOptions, KiroCatalogModel, KiroConnectionOptions } from './adapter.ts';
 export { clearTokenCache, DEFAULT_REGION, kiroAuthMethod, kiroCredentialDirectory, resolveToken, resolveTokenFromDirectories, } from './auth.ts';
 export type { KiroToken, TokenSourceOptions } from './auth.ts';
@@ -54,7 +54,7 @@ export interface Config {
      * models answer without one. An invalid value fails plugin loading.
      */
     proxyUrl?: string;
-    /** Region selecting the endpoint; omitted follows the signed-in token file. */
+    /** Kiro service region; IdC omission defaults to us-east-1 instead of its OIDC region. */
     region?: string;
     /** CodeWhisperer profile ARN; omitted uses the account default. */
     profileArn?: string;
