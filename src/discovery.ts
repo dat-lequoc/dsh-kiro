@@ -2,6 +2,7 @@
 
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { ModelModality } from '@deepseek-ai/dsh-llm'
+import { kiroServiceRegion } from './adapter.ts'
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import type { KiroAuthMethod, KiroToken } from './auth.ts'
 import { assertKiroProfileArn } from './profile.ts'
@@ -112,10 +113,12 @@ export async function discoverKiroProfileArn(
   request: ProfileDiscoveryRequest = postJsonWithHeaders,
 ): Promise<string | undefined> {
   if (token.authMethod === 'api_key') return undefined
-  const candidates = [...new Set([connection.region, token.region, 'us-east-1', 'eu-central-1']
+  const candidates = [...new Set([kiroServiceRegion(connection, token), 'us-east-1', 'eu-central-1']
     .filter((candidate): candidate is string => candidate !== undefined))]
+  let firstTransportError: unknown
   for (const candidate of candidates) {
     const endpoint = `https://codewhisperer.${candidate}.amazonaws.com`
+    let reachedEndpoint = false
     const attempts = [
       { url: `${endpoint}/ListAvailableProfiles`, headers: authHeaders(token) },
       {
@@ -128,13 +131,21 @@ export async function discoverKiroProfileArn(
       },
     ]
     for (const attempt of attempts) {
-      const response = await request(
-        attempt.url,
-        { maxResults: 50 },
-        attempt.headers,
-        connection.proxyUrl,
-        signal,
-      )
+      let response: Awaited<ReturnType<ProfileDiscoveryRequest>>
+      try {
+        response = await request(
+          attempt.url,
+          { maxResults: 50 },
+          attempt.headers,
+          connection.proxyUrl,
+          signal,
+        )
+      } catch (error: unknown) {
+        if (signal.aborted) throw error
+        firstTransportError ??= error
+        continue
+      }
+      reachedEndpoint = true
       if (response.status !== 200) continue
       const profiles = record(response.body)?.profiles
       if (!Array.isArray(profiles)) continue
@@ -149,11 +160,16 @@ export async function discoverKiroProfileArn(
           // Ignore malformed upstream entries instead of allowing them into a URL.
         }
       }
-      const regional = valid.find(arn => arn.split(':')[3] === token.region)
+      const regional = valid.find(arn => arn.split(':')[3] === candidate)
       if (regional !== undefined) return regional
       if (valid[0] !== undefined) return valid[0]
     }
+    // A real response proves this is the credential's reachable service region.
+    // Alternate regions are only transport fallbacks; probing them after a 4xx
+    // lets an unrelated proxy failure hide the useful response above.
+    if (reachedEndpoint) return undefined
   }
+  if (firstTransportError !== undefined) throw firstTransportError
   return undefined
 }
 
@@ -362,19 +378,26 @@ export class KiroModelDiscovery {
     force = false,
   ): Promise<readonly KiroCatalogModel[]> {
     const token = await this.options.resolveToken(connection, signal)
-    const authRegion = connection.region ?? token.region
-    const key = this.key(connection, authRegion)
+    const serviceRegion = kiroServiceRegion(connection, token)
+    const key = this.key(connection, serviceRegion)
     const cached = this.cache.get(key)
     if (!force && cached !== undefined && cached.expiresAt > Date.now()) return cached.models
 
-    const profileArn = connection.profileArn
-      ?? token.profileArn
-      ?? await this.discoverProfile(connection, token, authRegion, signal)
+    let profileArn = connection.profileArn ?? token.profileArn
+    if (profileArn === undefined) {
+      try {
+        profileArn = await this.discoverProfile(connection, token, serviceRegion, signal)
+      } catch (error: unknown) {
+        // A profile is optional for ListAvailableModels. Let that operation
+        // provide the authoritative failure instead of stopping at a probe.
+        if (signal.aborted) throw error
+      }
+    }
     const profileRegion = profileArn?.split(':')[3]
     const region = profileRegion !== undefined
       && /^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$/u.test(profileRegion)
       ? profileRegion
-      : authRegion
+      : serviceRegion
     const url = new URL(`${this.endpoint(region)}/ListAvailableModels`)
     url.searchParams.set('origin', 'AI_EDITOR')
     url.searchParams.set('maxResults', String(PAGE_SIZE))

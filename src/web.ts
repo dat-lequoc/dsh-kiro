@@ -4,7 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
-import { kiroCredentialDirectory } from './auth.ts'
+import { DEFAULT_REGION, kiroCredentialDirectory } from './auth.ts'
 import type { KiroToken } from './auth.ts'
 import { discoverKiroProfileArn } from './discovery.ts'
 import type { KiroModelDiscovery } from './discovery.ts'
@@ -272,7 +272,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     }
     const method = body.method
     const connection = dependencies.options()
-    const region = optionalText(body.region) ?? connection.region ?? 'us-east-1'
+    const region = optionalText(body.region) ?? DEFAULT_REGION
     const requestJson = (url: string, value: unknown, signal: AbortSignal) =>
       postJson(url, value, connection.proxyUrl, signal)
     const session = await startDeviceLogin(region, requestJson, controller.signal, {
@@ -334,7 +334,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     // works instead of only reporting that it was stored.
     let verified: { models?: number; refreshed?: true } | undefined
     if (method === 'refresh-token') {
-      const region = optionalText(body.region) ?? connection.region
+      const region = optionalText(body.region) ?? DEFAULT_REGION
       const profileArn = optionalText(body.profileArn)
       const clientId = optionalText(body.clientId)
       const clientSecret = optionalText(body.clientSecret)

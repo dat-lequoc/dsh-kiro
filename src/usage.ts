@@ -1,6 +1,7 @@
 /** Cached Kiro account usage retrieval through the control-plane API. */
 
 import { LlmError } from '@deepseek-ai/dsh-llm'
+import { kiroServiceRegion } from './adapter.ts'
 import type { KiroConnectionOptions } from './adapter.ts'
 import type { KiroAuthMethod, KiroToken } from './auth.ts'
 import { getJson, postJsonWithHeaders } from './transport.ts'
@@ -253,7 +254,7 @@ export class KiroUsageService {
   }
 
   private key(connection: KiroConnectionOptions, token: KiroToken): string {
-    return `${connection.region ?? token.region}\u0000${connection.profileArn ?? token.profileArn ?? ''}\u0000${connection.proxyUrl ?? ''}`
+    return `${kiroServiceRegion(connection, token)}\u0000${connection.profileArn ?? token.profileArn ?? ''}\u0000${connection.proxyUrl ?? ''}`
   }
 
   clear(): void {
@@ -279,7 +280,7 @@ export class KiroUsageService {
     const cached = this.cache.get(key)
     if (!force && cached !== undefined && cached.expiresAt > Date.now()) return cached.usage
 
-    const region = connection.region ?? token.region
+    const region = kiroServiceRegion(connection, token)
     const profileArn = connection.profileArn ?? token.profileArn
     const codeWhispererQuery = new URLSearchParams({
       isEmailRequired: 'true',
