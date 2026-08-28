@@ -12,10 +12,6 @@ The bundle registers the `kiro` provider route and mounts itself when installed.
 
 This is an independent integration and is not affiliated with or endorsed by AWS or Kiro. Kiro and its logo are Amazon trademarks; see [NOTICE.md](NOTICE.md).
 
-<p align="center">
-  <img src="assets/settings-kiro.png" alt="Settings → Kiro: account status, credit usage, and the live model selector" width="820">
-</p>
-
 ## Install
 
 ```sh
@@ -32,6 +28,10 @@ pnpm dsh --profile web
 ```
 
 Built `lib/` artifacts are committed, so a GitHub install does not need to execute a dependency build script.
+
+<p align="center">
+  <img src="assets/settings-kiro.png" alt="Settings → Kiro: account status, credit usage, and the live model selector" width="820">
+</p>
 
 ## Features
 

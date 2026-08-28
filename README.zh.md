@@ -12,10 +12,6 @@
 
 这是一个独立集成项目，与 AWS 或 Kiro 没有关联，也未获其赞助或认可。Kiro 及其徽标是 Amazon 的商标；详见 [NOTICE.md](NOTICE.md)。
 
-<p align="center">
-  <img src="assets/settings-kiro.png" alt="Settings → Kiro：账号状态、credits 使用量与实时模型选择器" width="820">
-</p>
-
 ## 安装
 
 ```sh
@@ -32,6 +28,10 @@ pnpm dsh --profile web
 ```
 
 仓库已提交构建后的 `lib/`，所以从 GitHub 安装时不需要执行依赖构建脚本。
+
+<p align="center">
+  <img src="assets/settings-kiro.png" alt="Settings → Kiro：账号状态、credits 使用量与实时模型选择器" width="820">
+</p>
 
 ## 功能
 
