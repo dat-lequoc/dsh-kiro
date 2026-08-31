@@ -19,6 +19,8 @@ import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm';
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts';
 export { DEFAULT_CONTEXT_WINDOW, DEFAULT_STREAM_IDLE_TIMEOUT_MS, KiroAdapter, httpErrorCode, } from './adapter.ts';
 export type { KiroAdapterOptions, KiroCatalogModel, KiroConnectionOptions } from './adapter.ts';
+export { kiroApiEndpoint } from './endpoint.ts';
+export type { KiroApiEndpoint } from './endpoint.ts';
 export { clearTokenCache, DEFAULT_REGION, kiroAuthMethod, kiroCredentialDirectory, resolveToken, resolveTokenFromDirectories, } from './auth.ts';
 export type { KiroToken, TokenSourceOptions } from './auth.ts';
 export type { DirectoryTokenSourceOptions, KiroAuthMethod } from './auth.ts';

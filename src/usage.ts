@@ -3,6 +3,7 @@
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { KiroConnectionOptions } from './adapter.ts'
 import type { KiroAuthMethod, KiroToken } from './auth.ts'
+import { kiroApiEndpoint } from './endpoint.ts'
 import { getJson, postJsonWithHeaders } from './transport.ts'
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000
@@ -292,15 +293,19 @@ export class KiroUsageService {
       ...profileArn === undefined ? {} : { profileArn },
     })
     const commonHeaders = headers(token)
+    // Every attempt rides the same published endpoint: the credential's region
+    // is the SSO region and may name no real host, so it resolves through the
+    // endpoint table (unknown regions fall back to the default endpoint).
+    const base = kiroApiEndpoint(region).url
     const attempts: (() => Promise<{ status: number; body: unknown }>)[] = [
       () => this.getRequest(
-        `https://codewhisperer.${region}.amazonaws.com/getUsageLimits?${codeWhispererQuery.toString()}`,
+        `${base}/getUsageLimits?${codeWhispererQuery.toString()}`,
         commonHeaders,
         connection.proxyUrl,
         signal,
       ),
       () => this.postRequest(
-        `https://codewhisperer.${region}.amazonaws.com`,
+        base,
         { origin: 'AI_EDITOR', resourceType: 'AGENTIC_REQUEST', ...profileArn === undefined ? {} : { profileArn } },
         {
           ...commonHeaders,
@@ -311,7 +316,7 @@ export class KiroUsageService {
         signal,
       ),
       () => this.getRequest(
-        `https://q.${region}.amazonaws.com/getUsageLimits?${qQuery.toString()}`,
+        `${base}/getUsageLimits?${qQuery.toString()}`,
         commonHeaders,
         connection.proxyUrl,
         signal,

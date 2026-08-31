@@ -43,6 +43,8 @@ export {
   httpErrorCode,
 } from './adapter.ts'
 export type { KiroAdapterOptions, KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
+export { kiroApiEndpoint } from './endpoint.ts'
+export type { KiroApiEndpoint } from './endpoint.ts'
 export {
   clearTokenCache,
   DEFAULT_REGION,
