@@ -161,7 +161,7 @@ Common options:
   if (credentials.profileArn === undefined && credentials.authMethod !== 'api_key') {
     try {
       const profileArn = await discoverKiroProfileArn(
-        { region: credentials.region, ...(proxyUrl === undefined ? {} : { proxyUrl }) },
+        { ...(proxyUrl === undefined ? {} : { proxyUrl }) },
         {
           accessToken: credentials.accessToken,
           region: credentials.region,

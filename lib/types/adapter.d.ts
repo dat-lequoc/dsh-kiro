@@ -63,7 +63,7 @@ export interface KiroCatalogModel {
  * makes a configuration change reach the next request without re-registration.
  */
 export interface KiroConnectionOptions {
-    /** Region selecting the `q.<region>.amazonaws.com` endpoint. */
+    /** Explicit Kiro service region; distinct from the credential's OIDC region. */
     region?: string;
     /**
      * Proxy egress for every Kiro request, or `undefined` for a direct
@@ -87,6 +87,13 @@ export interface KiroConnectionOptions {
     /** Provider-owned model-request retry policy, already resolved. */
     retryPolicy: ResolvedRetryPolicy;
 }
+/**
+ * Select the Kiro service region without confusing it with the region that
+ * issued an IAM Identity Center token. A profile ARN is authoritative, an
+ * explicit deployment override comes next, and IdC otherwise uses Kiro's
+ * available CodeWhisperer home region rather than its regional OIDC endpoint.
+ */
+export declare function kiroServiceRegion(connection: Pick<KiroConnectionOptions, 'region' | 'profileArn'>, token: Pick<KiroToken, 'region' | 'authMethod' | 'profileArn'>): string;
 /** Constructor options: the operation-local resolution hooks the plugin owns. */
 export interface KiroAdapterOptions {
     /** Current validated connection facts; called once per operation. */
@@ -174,7 +181,15 @@ export declare class KiroAdapter extends LlmAdapter {
     providerInfo(provider: string): LlmProviderInfo;
     providerRetryPolicy(_provider: string): ResolvedRetryPolicy;
     listModels(provider: string): Promise<readonly LlmModelInfo[]>;
+    /** Bind model metadata and dispatch to the same connection/catalog snapshot. */
+    prepareCall(provider: string, model: string, _signal?: AbortSignal): Promise<{
+        model: LlmResolvedModelInfo;
+        stream: (options: GenerateOptions) => AsyncIterable<StreamChunk>;
+    }>;
     resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo>;
+    private catalog;
+    private resolvedModel;
     stream(options: GenerateOptions): AsyncIterable<StreamChunk>;
+    private streamWithConnection;
     private request;
 }

@@ -39,6 +39,7 @@ import type { WireImageBlock } from './types.ts'
 import type { RequestDefaults } from './serialize.ts'
 import { post } from './transport.ts'
 import { translate } from './translate.ts'
+import { DEFAULT_REGION } from './auth.ts'
 import type { KiroToken } from './auth.ts'
 import { profileRegion } from './profile.ts'
 
@@ -152,7 +153,7 @@ export interface KiroCatalogModel {
  * makes a configuration change reach the next request without re-registration.
  */
 export interface KiroConnectionOptions {
-  /** Region selecting the `q.<region>.amazonaws.com` endpoint. */
+  /** Explicit Kiro service region; distinct from the credential's OIDC region. */
   region?: string
   /**
    * Proxy egress for every Kiro request, or `undefined` for a direct
@@ -175,6 +176,22 @@ export interface KiroConnectionOptions {
   tokenExpiryBufferMs: number
   /** Provider-owned model-request retry policy, already resolved. */
   retryPolicy: ResolvedRetryPolicy
+}
+
+/**
+ * Select the Kiro service region without confusing it with the region that
+ * issued an IAM Identity Center token. A profile ARN is authoritative, an
+ * explicit deployment override comes next, and IdC otherwise uses Kiro's
+ * available CodeWhisperer home region rather than its regional OIDC endpoint.
+ */
+export function kiroServiceRegion(
+  connection: Pick<KiroConnectionOptions, 'region' | 'profileArn'>,
+  token: Pick<KiroToken, 'region' | 'authMethod' | 'profileArn'>,
+): string {
+  const profileArn = connection.profileArn ?? token.profileArn
+  if (profileArn !== undefined) return profileRegion(profileArn)
+  if (connection.region !== undefined) return connection.region
+  return token.authMethod === 'idc' ? DEFAULT_REGION : token.region
 }
 
 /** Constructor options: the operation-local resolution hooks the plugin owns. */
@@ -447,13 +464,42 @@ export class KiroAdapter extends LlmAdapter {
     return models.map(model => modelInfo(provider, model))
   }
 
+  /** Bind model metadata and dispatch to the same connection/catalog snapshot. */
+  prepareCall(
+    provider: string,
+    model: string,
+    _signal?: AbortSignal,
+  ): Promise<{
+      model: LlmResolvedModelInfo
+      stream: (options: GenerateOptions) => AsyncIterable<StreamChunk>
+    }> {
+    const connection = this.config.options()
+    const catalog = this.catalog(connection)
+    return Promise.resolve({
+      model: this.resolvedModel(provider, model, connection, catalog),
+      stream: options => this.streamWithConnection(options, connection, catalog),
+    })
+  }
+
   override resolveModel(
     provider: string,
     model: string,
     _signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
     const connection = this.config.options()
-    const catalog = this.config.currentModels?.(connection) ?? connection.models
+    return Promise.resolve(this.resolvedModel(provider, model, connection, this.catalog(connection)))
+  }
+
+  private catalog(connection: KiroConnectionOptions): readonly KiroCatalogModel[] {
+    return this.config.currentModels?.(connection) ?? connection.models
+  }
+
+  private resolvedModel(
+    provider: string,
+    model: string,
+    connection: KiroConnectionOptions,
+    catalog: readonly KiroCatalogModel[],
+  ): LlmResolvedModelInfo {
     const configured = catalog.find(entry => entry.id === model)
     const thinking = connection.defaults.thinking !== 'disabled' && (configured?.thinking ?? true)
     const discoveredEfforts = configured?.reasoningEfforts
@@ -465,7 +511,7 @@ export class KiroAdapter extends LlmAdapter {
           && efforts.includes(configured.defaultReasoningEffort)
         ? configured.defaultReasoningEffort
         : efforts.includes('high') ? 'high' : efforts[0] ?? 'off'
-    return Promise.resolve({
+    return {
       ...configured === undefined
         ? { provider, id: model, name: model, inputModalities: ['text' as const] }
         : modelInfo(provider, configured),
@@ -474,20 +520,34 @@ export class KiroAdapter extends LlmAdapter {
       reasoning: thinking
         ? { efforts: effortInfo(efforts), defaultEffort: ReasoningEffortId(defaultEffort) }
         : { efforts: OFF_ONLY_REASONING_EFFORTS, defaultEffort: OFF },
-    })
+    }
   }
 
-  async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+  stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const connection = this.config.options()
+    return this.streamWithConnection(options, connection, this.catalog(connection))
+  }
+
+  private async * streamWithConnection(
+    options: GenerateOptions,
+    connection: KiroConnectionOptions,
+    catalog: readonly KiroCatalogModel[],
+  ): AsyncIterable<StreamChunk> {
     // One resolution per stream call: connection facts and the token freeze
     // here and hold for the whole request, so an in-flight stream never
     // observes a configuration change and the next call re-resolves.
-    const connection = this.config.options()
     const consumer = new AbortController()
     const upstream = options.signal === undefined
       ? consumer.signal
       : AbortSignal.any([options.signal, consumer.signal])
     using watchdog = idleWatchdog(upstream, connection.streamIdleTimeoutMs, STREAM_IDLE_TIMEOUT_CODE)
-    const iterator = this.request(options, watchdog.signal, connection, () => { watchdog.pulse() })[Symbol.asyncIterator]()
+    const iterator = this.request(
+      options,
+      watchdog.signal,
+      connection,
+      catalog,
+      () => { watchdog.pulse() },
+    )[Symbol.asyncIterator]()
     let exhausted = false
     try {
       while (true) {
@@ -527,17 +587,15 @@ export class KiroAdapter extends LlmAdapter {
     options: GenerateOptions,
     signal: AbortSignal,
     connection: KiroConnectionOptions,
+    catalog: readonly KiroCatalogModel[],
     onActivity: () => void,
   ): AsyncIterable<StreamChunk> {
     const token = await this.config.resolveToken(connection, signal)
     const profileArn = connection.profileArn ?? token.profileArn
-    const region = profileArn === undefined
-      ? connection.region ?? token.region
-      : profileRegion(profileArn)
+    const region = kiroServiceRegion(connection, token)
     const url = kiroRequestEndpoint(token, region)
     // Prepared before the transport call so a serialization failure keeps its
     // own diagnosis instead of being relabeled a transport failure.
-    const catalog = this.config.currentModels?.(connection) ?? connection.models
     const selected = catalog.find(model => model.id === options.model)
     const nativeEffort = selected?.effortSchemaPath === undefined
       || selected.reasoningEfforts === undefined

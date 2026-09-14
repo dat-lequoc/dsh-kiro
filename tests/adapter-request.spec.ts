@@ -155,6 +155,22 @@ describe('Kiro request identity and generation options', () => {
       .not.toBe(first.conversationState.conversationId)
   })
 
+  it('routes IDC inference independently of its OIDC credential region', async () => {
+    await turn(adapter(
+      { ...connection(), region: undefined },
+      {
+        resolveToken: () => Promise.resolve({
+          accessToken: 'access',
+          region: 'ap-southeast-1',
+          expiresAt: Date.now() + 60_000,
+          authMethod: 'idc' as const,
+        }),
+      },
+    ))
+    expect(posted.at(-1)?.url)
+      .toBe('https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse')
+  })
+
   it('sends the caller’s output cap in the field the model advertises', async () => {
     const request = await turn(adapter(), { maxTokens: 8000, temperature: 0.2 })
     // `max_tokens` inside the advertised schema branch is the only accepted
