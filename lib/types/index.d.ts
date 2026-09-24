@@ -13,7 +13,8 @@
  *
  * @module dsh-kiro
  */
-import type { Context } from '@deepseek-ai/cordis';
+import type { Context, Volatile } from '@deepseek-ai/cordis';
+import '@deepseek-ai/dsh-settings';
 import z from '@deepseek-ai/schemastery';
 import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm';
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts';
@@ -53,27 +54,55 @@ export interface Config {
      * `claude-*` models only through a permitted proxy, while the open-weight
      * models answer without one. An invalid value fails plugin loading.
      */
-    proxyUrl?: string;
+    proxyUrl: Volatile<string | undefined>;
     /** Region selecting the endpoint; omitted follows the signed-in token file. */
-    region?: string;
+    region: Volatile<string | undefined>;
     /** CodeWhisperer profile ARN; omitted uses the account default. */
-    profileArn?: string;
+    profileArn: Volatile<string | undefined>;
     /** Deployment thinking policy; `disabled` suppresses model reasoning. */
-    thinking?: 'enabled' | 'disabled';
+    thinking: Volatile<'enabled' | 'disabled' | undefined>;
     /** Optional provider-wide override; omission follows each model's live default. */
-    reasoningEffort?: 'none' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    reasoningEffort: Volatile<'none' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined>;
     /** Positive context capacity used when the selected model has no exact value (default 200,000). */
-    defaultContextWindow?: number;
+    defaultContextWindow: Volatile<number>;
     /** Advisory models shown by discovery consumers; defaults to the verified account tier. */
-    models?: KiroCatalogModel[];
+    models: Volatile<KiroCatalogModel[]>;
     /** Maximum provider idle time while one stream read is outstanding (default five minutes). */
-    streamIdleTimeoutMs?: number;
+    streamIdleTimeoutMs: Volatile<number>;
     /** Refresh the access token this long before expiry (default five minutes). */
-    tokenExpiryBufferMs?: number;
+    tokenExpiryBufferMs: Volatile<number>;
     /** Provider-owned model-request retry policy; omission uses normal defaults. */
-    retryPolicy?: RetryPolicyConfig;
+    retryPolicy: Volatile<RetryPolicyConfig | undefined>;
 }
-export declare const Config: z<Config>;
+/** Plain values accepted by the provider resolver. */
+export type Options = {
+    [K in keyof Config]?: Config[K] extends Volatile<infer T> ? Exclude<T, undefined> : never;
+};
+/** Read the current value behind every validated configuration reference. */
+export declare function plainOptions(config: Config): Options;
+export declare const Config: z<Schemastery.ObjectS<NoInfer<{
+    proxyUrl: z<string, string, "volatile">;
+    region: z<string, string, "volatile">;
+    profileArn: z<string, string, "volatile">;
+    thinking: z<"enabled" | "disabled", "enabled" | "disabled", "volatile">;
+    reasoningEffort: z<"none" | "off" | "low" | "medium" | "high" | "xhigh" | "max", "none" | "off" | "low" | "medium" | "high" | "xhigh" | "max", "volatile">;
+    defaultContextWindow: z<number, number, "volatile-defined">;
+    models: z<NoInfer<KiroCatalogModel[]>, NoInfer<KiroCatalogModel[]>, "volatile-defined">;
+    streamIdleTimeoutMs: z<number, number, "volatile-defined">;
+    tokenExpiryBufferMs: z<number, number, "volatile-defined">;
+    retryPolicy: z<NoInfer<RetryPolicyConfig>, NoInfer<RetryPolicyConfig>, "volatile">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    proxyUrl: z<string, string, "volatile">;
+    region: z<string, string, "volatile">;
+    profileArn: z<string, string, "volatile">;
+    thinking: z<"enabled" | "disabled", "enabled" | "disabled", "volatile">;
+    reasoningEffort: z<"none" | "off" | "low" | "medium" | "high" | "xhigh" | "max", "none" | "off" | "low" | "medium" | "high" | "xhigh" | "max", "volatile">;
+    defaultContextWindow: z<number, number, "volatile-defined">;
+    models: z<NoInfer<KiroCatalogModel[]>, NoInfer<KiroCatalogModel[]>, "volatile-defined">;
+    streamIdleTimeoutMs: z<number, number, "volatile-defined">;
+    tokenExpiryBufferMs: z<number, number, "volatile-defined">;
+    retryPolicy: z<NoInfer<RetryPolicyConfig>, NoInfer<RetryPolicyConfig>, "volatile">;
+}>>, "plain">;
 /**
  * One resolution's complete request facts. Connection, proxy, and token-policy
  * facts are one value on purpose: a snapshot the resolver rejects keeps the
@@ -91,5 +120,5 @@ export type ResolvedKiroOptions = KiroConnectionOptions;
  * @throws when a field is present but unusable (a malformed proxy URL, a
  *   duplicate catalog id, an out-of-range timeout).
  */
-export declare function resolveAdapterOptions(config: Config): ResolvedKiroOptions;
+export declare function resolveAdapterOptions(config: Options): ResolvedKiroOptions;
 export declare function apply(ctx: Context, config: Config): void;

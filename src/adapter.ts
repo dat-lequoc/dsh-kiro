@@ -249,8 +249,8 @@ const IMAGE_FORMATS = new Map<ImageMediaType, WireImageBlock['format']>([
 ])
 
 /**
- * Collect every image reference in one request, including images nested in tool
- * results, so each is read exactly once however often it is repeated.
+ * Collect every image reference in one request so each is read exactly once
+ * however often it is repeated.
  * @param content - blocks from one message.
  * @param refs - accumulator keyed by attachment id.
  */
@@ -260,7 +260,6 @@ function collectImageRefs(
 ): void {
   for (const block of content) {
     if (block.type === 'image') refs.set(block.attachment.attachmentId, block.attachment)
-    else if (block.type === 'tool-result') collectImageRefs(block.content, refs)
   }
 }
 

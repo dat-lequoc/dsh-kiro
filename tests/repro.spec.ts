@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  CallId,
+  ToolCallId,
   CONTEXT_WINDOW_EXCEEDED_CODE,
   createAssistantMessage,
   createToolResultMessage,
@@ -34,7 +34,7 @@ function assistant(text: string, calls: { id: string; name: string; args: string
       ...text.length > 0 ? [{ type: 'text' as const, text }] : [],
       ...calls.map(call => ({
         type: 'tool-call' as const,
-        id: CallId(call.id),
+        id: ToolCallId(call.id),
         name: call.name,
         arguments: call.args,
       })),
@@ -44,7 +44,7 @@ function assistant(text: string, calls: { id: string; name: string; args: string
 }
 
 function toolResult(id: string, text: string): Message {
-  return createToolResultMessage({ callId: CallId(id), content: [{ type: 'text', text }] })
+  return createToolResultMessage({ callId: ToolCallId(id), content: [{ type: 'text', text }] })
 }
 
 function serialize(messages: Message[], extra: Partial<GenerateOptions> = {}, defaults = {}) {

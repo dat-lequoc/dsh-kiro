@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CallId, createAssistantMessage, createMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createAssistantMessage, createMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
 import { serializeRequest } from '../src/serialize.ts'
 import type { WireImageBlock, WireUserInputMessage } from '../src/types.ts'
@@ -18,7 +18,7 @@ function assistant(text: string, calls: { id: string; name: string; args: string
       ...text.length > 0 ? [{ type: 'text' as const, text }] : [],
       ...calls.map(call => ({
         type: 'tool-call' as const,
-        id: CallId(call.id),
+        id: ToolCallId(call.id),
         name: call.name,
         arguments: call.args,
       })),
@@ -30,7 +30,7 @@ function assistant(text: string, calls: { id: string; name: string; args: string
 /** One tool-result message for the named call. */
 function toolResult(id: string, text: string, isError = false): Message {
   return createToolResultMessage({
-    callId: CallId(id),
+    callId: ToolCallId(id),
     content: [{ type: 'text', text }],
     isError,
   })
@@ -360,7 +360,7 @@ describe('serializeRequest', () => {
     // `ToolResultContentBlock` is a union of text and json only, so the
     // enclosing turn is the nearest seat that keeps the screenshot.
     const result = createToolResultMessage({
-      callId: CallId('call-1'),
+      callId: ToolCallId('call-1'),
       content: [
         { type: 'text', text: 'screenshot taken' },
         { type: 'image', attachment: imageRef('att-3') },
