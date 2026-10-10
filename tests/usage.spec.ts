@@ -65,7 +65,7 @@ describe('Kiro usage', () => {
     await service.get(connection, signal)
     expect(getRequest).toHaveBeenCalledTimes(1)
     const [url, headers, proxy] = getRequest.mock.calls[0] as [string, Record<string, string>, string]
-    expect(url).toContain('codewhisperer.us-east-1.amazonaws.com/getUsageLimits?')
+    expect(url).toContain('q.us-east-1.amazonaws.com/getUsageLimits?')
     expect(url).toContain('resourceType=AGENTIC_REQUEST')
     expect(url).not.toContain('profileArn=')
     expect(headers.authorization).toBe('Bearer access')

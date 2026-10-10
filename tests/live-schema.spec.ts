@@ -28,7 +28,7 @@ describe.runIf(process.env.KIRO_LIVE === '1')('live Kiro model request schema', 
         }, signal),
       writableDirectories: [managed],
     })
-    const url = new URL('https://codewhisperer.us-east-1.amazonaws.com/ListAvailableModels')
+    const url = new URL('https://q.us-east-1.amazonaws.com/ListAvailableModels')
     url.searchParams.set('origin', 'AI_EDITOR')
     url.searchParams.set('maxResults', '50')
     if (token.profileArn !== undefined) url.searchParams.set('profileArn', token.profileArn)

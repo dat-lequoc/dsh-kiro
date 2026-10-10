@@ -63,7 +63,10 @@ export interface KiroCatalogModel {
  * makes a configuration change reach the next request without re-registration.
  */
 export interface KiroConnectionOptions {
-    /** Region selecting the `q.<region>.amazonaws.com` endpoint. */
+    /**
+     * Region selecting the Kiro endpoint; a region the Amazon Q API does not
+     * serve falls back to the default endpoint. Omitted follows the token file.
+     */
     region?: string;
     /**
      * Proxy egress for every Kiro request, or `undefined` for a direct
@@ -121,8 +124,8 @@ export interface AttachmentStore {
         mediaType: ImageMediaType;
     }>;
 }
-/** Select the auth-specific upstream surface Kiro accepts. */
-export declare function kiroRequestEndpoint(token: KiroToken, region: string): string;
+/** Select the upstream surface Kiro accepts for one request region. */
+export declare function kiroRequestEndpoint(_token: KiroToken, region: string): string;
 /** Add the token discriminator required by API-key and external-IdP auth. */
 export declare function kiroTokenTypeHeaders(token: KiroToken): Record<string, string>;
 /**

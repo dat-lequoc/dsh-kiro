@@ -4,6 +4,7 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { ModelModality } from '@deepseek-ai/dsh-llm'
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import type { KiroAuthMethod, KiroToken } from './auth.ts'
+import { kiroApiEndpoint } from './endpoint.ts'
 import { assertKiroProfileArn } from './profile.ts'
 import { getJson, postJsonWithHeaders } from './transport.ts'
 
@@ -112,10 +113,17 @@ export async function discoverKiroProfileArn(
   request: ProfileDiscoveryRequest = postJsonWithHeaders,
 ): Promise<string | undefined> {
   if (token.authMethod === 'api_key') return undefined
-  const candidates = [...new Set([connection.region, token.region, 'us-east-1', 'eu-central-1']
+  // The published service regions come first: an Identity Center start URL can
+  // live in a region the Q API does not serve, where no request hostname exists
+  // at all. The credential's own region stays in the list so a deployment whose
+  // egress is region-scoped still gets its intended shot.
+  const candidates = [...new Set(['us-east-1', 'eu-central-1', connection.region, token.region]
     .filter((candidate): candidate is string => candidate !== undefined))]
+  const tried = new Set<string>()
   for (const candidate of candidates) {
-    const endpoint = `https://codewhisperer.${candidate}.amazonaws.com`
+    const endpoint = kiroApiEndpoint(candidate).url
+    if (tried.has(endpoint)) continue
+    tried.add(endpoint)
     const attempts = [
       { url: `${endpoint}/ListAvailableProfiles`, headers: authHeaders(token) },
       {
@@ -128,13 +136,24 @@ export async function discoverKiroProfileArn(
       },
     ]
     for (const attempt of attempts) {
-      const response = await request(
-        attempt.url,
-        { maxResults: 50 },
-        attempt.headers,
-        connection.proxyUrl,
-        signal,
-      )
+      let response: { status: number; body: unknown }
+      try {
+        // The JSON protocol body is snake_case: the camelCase `maxResults` the
+        // service's own model names is rejected with REQUEST_BODY_INVALID, and
+        // with it profile discovery silently returned no ARN at all.
+        response = await request(
+          attempt.url,
+          { max_results: 50 },
+          attempt.headers,
+          connection.proxyUrl,
+          signal,
+        )
+      } catch (error: unknown) {
+        // One candidate endpoint being unreachable must not abort the search:
+        // the next candidate may serve this account.
+        if (signal.aborted) throw error
+        continue
+      }
       if (response.status !== 200) continue
       const profiles = record(response.body)?.profiles
       if (!Array.isArray(profiles)) continue
@@ -317,9 +336,7 @@ export class KiroModelDiscovery {
   }
 
   private endpoint(region: string): string {
-    return region === 'us-east-1'
-      ? 'https://codewhisperer.us-east-1.amazonaws.com'
-      : `https://q.${region}.amazonaws.com`
+    return kiroApiEndpoint(region).url
   }
 
   private headers(token: KiroToken): Record<string, string> {
