@@ -2,8 +2,11 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import '@deepseek-ai/dsh-host-webserver'
+import { unlink } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { join } from 'node:path'
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
+import { KiroAccountStore } from './accounts.ts'
 import { kiroCredentialDirectory } from './auth.ts'
 import type { KiroToken } from './auth.ts'
 import { discoverKiroProfileArn } from './discovery.ts'
@@ -21,12 +24,14 @@ import {
   saveManagedCredentials,
   startDeviceLogin,
   startSocialDeviceLogin,
+  syncManagedCredentialFile,
 } from './login.ts'
 import type { DeviceLoginPoll, ManagedCredentials, RefreshTokenOrigin } from './login.ts'
 import { getJson, postJson } from './transport.ts'
 import type { KiroUsageService } from './usage.ts'
 
-interface WebDependencies {
+/** Everything the Kiro Web API needs from the running plugin. */
+export interface WebDependencies {
   managedDirectory: string
   options: () => KiroConnectionOptions
   discovery: KiroModelDiscovery
@@ -39,6 +44,10 @@ interface LoginFlow {
   status: 'pending' | 'complete' | 'error'
   kind: 'device' | 'social-device'
   method: string
+  /** Account this login replaces; absent when it adds one. */
+  accountId?: string
+  /** Label the new account receives; absent when the store derives one. */
+  label?: string
   authUrl?: string
   userCode?: string
   startedAt: number
@@ -108,6 +117,57 @@ function refreshTokenOrigin(value: unknown): RefreshTokenOrigin | undefined {
   throw new Error(`Unsupported Kiro refresh-token credential source "${named}"`)
 }
 
+/** Account targeting one login or import request may name. */
+interface AccountTarget {
+  /** Update this stored account instead of adding one. */
+  accountId?: string
+  /** Label for a newly added account. */
+  label?: string
+}
+
+/**
+ * Read the account a login or import writes to.
+ * @param source - the request body, or a login flow already carrying the target.
+ * @returns the named account and label, when the caller supplied them.
+ */
+function accountTarget(source: { accountId?: unknown; label?: unknown }): AccountTarget {
+  const accountId = optionalText(source.accountId)
+  const label = optionalText(source.label)
+  return {
+    ...accountId === undefined ? {} : { accountId },
+    ...label === undefined ? {} : { label },
+  }
+}
+
+/**
+ * Narrow the optional document revision a client sends with a mutation.
+ * @param value - the request field.
+ * @returns the revision, or undefined when the client sent none.
+ * @throws when the field is present but is not a non-negative safe integer.
+ */
+function optionalRevision(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Kiro account revision must be a non-negative integer')
+  }
+  return value
+}
+
+/**
+ * Delete the device registration one removed account owned.
+ * @param directory - the credential directory this plugin owns.
+ * @param credential - the removed account stored credential.
+ */
+async function dropRegistration(directory: string, credential: Record<string, unknown>): Promise<void> {
+  const hash = credential['clientIdHash']
+  if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/u.test(hash)) return
+  try {
+    await unlink(join(directory, hash + '.json'))
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+}
+
 function publicLogin(flow: LoginFlow | undefined): Record<string, unknown> {
   if (flow === undefined) return { status: 'idle' }
   return {
@@ -118,6 +178,7 @@ function publicLogin(flow: LoginFlow | undefined): Record<string, unknown> {
     ...flow.completedAt === undefined ? {} : { completedAt: flow.completedAt },
     ...flow.authUrl === undefined ? {} : { authUrl: flow.authUrl },
     ...flow.userCode === undefined ? {} : { userCode: flow.userCode },
+    ...flow.accountId === undefined ? {} : { accountId: flow.accountId },
     ...flow.error === undefined ? {} : { error: flow.error },
   }
 }
@@ -152,6 +213,9 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
   let login: LoginFlow | undefined
   let loginController: AbortController | undefined
 
+  /** The multi-account store this API manages. */
+  const accountStore = (): KiroAccountStore => new KiroAccountStore(dependencies.managedDirectory)
+
   const emitUpdated = (): void => {
     try {
       ctx.emit('llm/adapters-updated')
@@ -167,6 +231,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       : await credentialSummary(kiroCredentialDirectory())
     const connection = dependencies.options()
     const cached = dependencies.discovery.current(connection)
+    const accounts = await accountStore().snapshot()
     return {
       authenticated: managed.authenticated || external.authenticated,
       credentialSource: managed.authenticated ? 'dsh' : external.authenticated ? 'kiro' : 'none',
@@ -174,6 +239,8 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       region: managed.region ?? external.region ?? connection.region,
       expiresAt: managed.expiresAt ?? external.expiresAt,
       profileArn: connection.profileArn ?? managed.profileArn ?? external.profileArn,
+      accounts,
+      activeAccountId: accounts.activeAccountId,
       login: publicLogin(login),
       models: await modelPayload(
         cached ?? connection.models,
@@ -184,7 +251,18 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     }
   }
 
-  const save = async (credentials: ManagedCredentials, signal: AbortSignal): Promise<void> => {
+  /**
+   * Store one login or import, adding an account or replacing a named one.
+   * @param credentials - the credential the flow produced.
+   * @param signal - request cancellation for profile discovery.
+   * @param target - the account to update, and the label for a new one.
+   * @returns the identifier of the account that now holds the credential.
+   */
+  const save = async (
+    credentials: ManagedCredentials,
+    signal: AbortSignal,
+    target: AccountTarget = {},
+  ): Promise<{ accountId: string }> => {
     let complete = credentials
     if (credentials.profileArn === undefined && credentials.authMethod !== 'api_key') {
       try {
@@ -200,17 +278,18 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
         )
         if (profileArn !== undefined) complete = { ...credentials, profileArn }
       } catch (error: unknown) {
-        ctx.logger.warn(`dsh-kiro: profile ARN discovery after login failed: ${safeError(error)}`)
+        ctx.logger.warn('dsh-kiro: profile ARN discovery after login failed: ' + safeError(error))
       }
     }
-    await saveManagedCredentials(dependencies.managedDirectory, complete)
+    const saved = await saveManagedCredentials(dependencies.managedDirectory, complete, target)
     dependencies.discovery.clear()
     dependencies.usage.clear()
     emitUpdated()
+    return saved
   }
 
   const finish = async (credentials: ManagedCredentials, flow: LoginFlow, signal: AbortSignal): Promise<void> => {
-    await save(credentials, signal)
+    const saved = await save(credentials, signal, accountTarget(flow))
     login = {
       status: 'complete',
       kind: flow.kind,
@@ -219,6 +298,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       ...flow.userCode === undefined ? {} : { userCode: flow.userCode },
       startedAt: flow.startedAt,
       completedAt: Date.now(),
+      accountId: saved.accountId,
     }
   }
 
@@ -271,6 +351,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       throw new Error('Unsupported Kiro device login method')
     }
     const method = body.method
+    const target = accountTarget(body)
     const connection = dependencies.options()
     const region = optionalText(body.region) ?? connection.region ?? 'us-east-1'
     const requestJson = (url: string, value: unknown, signal: AbortSignal) =>
@@ -286,8 +367,8 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       authUrl: session.verificationUri,
       userCode: session.userCode,
       startedAt: Date.now(),
+      ...target,
     }
-    login = flow
     monitorLogin(
       session.intervalSeconds,
       flow,
@@ -297,7 +378,13 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     return publicLogin(login)
   }
 
-  const beginSocialDevice = async (method: 'google' | 'github'): Promise<unknown> => {
+  /**
+   * Start a Google or GitHub device login.
+   * @param method - the identity provider to sign in with.
+   * @param target - the account a re-login updates, and a label for a new one.
+   * @returns the pending login the page polls.
+   */
+  const beginSocialDevice = async (method: 'google' | 'github', target: AccountTarget = {}): Promise<unknown> => {
     loginController?.abort('starting a new Kiro login')
     const controller = new AbortController()
     loginController = controller
@@ -312,6 +399,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       authUrl: session.verificationUri,
       userCode: session.userCode,
       startedAt: Date.now(),
+      ...target,
     }
     login = flow
     monitorLogin(
@@ -370,7 +458,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     } else {
       throw new Error('Unsupported Kiro import method')
     }
-    await save(credentials, signal)
+    await save(credentials, signal, accountTarget(body))
     login = undefined
     const current = await status() as Record<string, unknown>
     // External-IdP JSON is only reshaped locally, so it reports no verification:
@@ -395,7 +483,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               const body = await readJson(request)
               const method = optionalText(body.method) ?? 'builder-id'
               const value = method === 'google' || method === 'github'
-                ? await beginSocialDevice(method)
+                ? await beginSocialDevice(method, accountTarget(body))
                 : await beginDevice({ ...body, method })
               sendJson(response, 200, { ok: true, value })
               return
@@ -415,6 +503,39 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               loginController?.abort('Kiro logout')
               login = undefined
               await deleteDeviceCredentials(dependencies.managedDirectory)
+              dependencies.discovery.clear()
+              dependencies.usage.clear()
+              emitUpdated()
+              sendJson(response, 200, { ok: true, value: await status() })
+              return
+            }
+            if (path === 'accounts' && request.method === 'GET') {
+              sendJson(response, 200, { ok: true, value: await accountStore().snapshot() })
+              return
+            }
+            if (path === 'accounts/activate' && request.method === 'POST') {
+              const body = await readJson(request)
+              const accountId = requiredText(body.accountId, 'account id')
+              const revision = optionalRevision(body.revision)
+              await accountStore().activate(accountId, revision)
+              await syncManagedCredentialFile(dependencies.managedDirectory)
+              dependencies.discovery.clear()
+              dependencies.usage.clear()
+              emitUpdated()
+              sendJson(response, 200, { ok: true, value: await status() })
+              return
+            }
+            if (path === 'accounts/remove' && request.method === 'POST') {
+              const body = await readJson(request)
+              const accountId = requiredText(body.accountId, 'account id')
+              const replacementId = optionalText(body.replacementId)
+              const revision = optionalRevision(body.revision)
+              const removed = await accountStore().remove(accountId, {
+                ...replacementId === undefined ? {} : { replacementId },
+                ...revision === undefined ? {} : { expectedRevision: revision },
+              })
+              await dropRegistration(dependencies.managedDirectory, removed.credential)
+              await syncManagedCredentialFile(dependencies.managedDirectory)
               dependencies.discovery.clear()
               dependencies.usage.clear()
               emitUpdated()

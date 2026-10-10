@@ -210,13 +210,19 @@ describe('settings nav icon lifecycle', () => {
     expect(svg.innerHTML).toContain('fill="#9046FF"')
   })
 
-  it('offers a managed sign-in for every credential source but its own', () => {
+  it('offers a sign-in action for every credential source, its own included', () => {
     // A Kiro IDE/CLI credential cannot be deleted by this plugin, so hiding the
-    // sign-in button whenever something is authenticated leaves that state with
+    // sign-in button whenever something was authenticated left that state with
     // no action at all — the reported "I can't even log out".
+    // With several accounts the same button adds one, so it is no longer gated
+    // on which credential source is in force.
     const source = readFileSync(new URL('../client/index.cjs', import.meta.url), 'utf8')
-    expect(source).toContain("status?.credentialSource !== 'dsh' && React.createElement('button'")
-    expect(source).toContain("status?.authenticated ? t('connectManaged') : t('connectKiro')")
+    expect(source).toContain("onClick: () => openAuth('')")
+    expect(source).toContain('}, accountList.length > 0')
+    expect(source).toContain("? t('addAccount')")
+    expect(source).toContain(": status?.authenticated ? t('connectManaged') : t('connectKiro')")
+    // The action is not hidden by the credential source it would replace.
+    expect(source).not.toContain("status?.credentialSource !== 'dsh' && React.createElement('button'")
     // Sign out stays scoped to plugin-owned credentials, and the card says why.
     expect(source).toContain("status?.credentialSource === 'dsh' && React.createElement('button'")
     expect(source).toContain("status?.credentialSource === 'kiro' && React.createElement('div'")

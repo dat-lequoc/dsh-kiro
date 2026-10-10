@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { clearTokenCache, kiroAuthMethod } from './auth.ts'
+import { KiroAccountStore } from './accounts.ts'
 import type { KiroAuthMethod } from './auth.ts'
 import { normalizeExternalIdpCredentials } from './external-idp.ts'
 import { assertKiroProfileArn } from './profile.ts'
@@ -516,18 +517,22 @@ async function atomicJson(path: string, value: unknown): Promise<void> {
   await rename(temporary, path)
 }
 
-/** Save any normalized credential beneath DSH home with private permissions. */
-export async function saveManagedCredentials(directory: string, credentials: ManagedCredentials): Promise<void> {
-  await mkdir(directory, { recursive: true, mode: 0o700 })
-  let clientIdHash: string | undefined
-  if (credentials.clientId !== undefined && credentials.clientSecret !== undefined) {
-    clientIdHash = createHash('sha256').update(credentials.clientId).digest('hex')
-    await atomicJson(join(directory, `${clientIdHash}.json`), {
-      clientId: credentials.clientId,
-      clientSecret: credentials.clientSecret,
-    })
-  }
-  await atomicJson(join(directory, TOKEN_FILE), {
+/** Targeting and labelling a login supplies when it stores its credential. */
+export interface SaveManagedCredentialOptions {
+  /** Update this account instead of adding one, which is what a re-login does. */
+  accountId?: string
+  /** Human label for a newly added account. */
+  label?: string
+  /** Make the saved account active. Defaults to true. */
+  activate?: boolean
+}
+
+/** The stored record one login writes, in the shape every resolver reads. */
+function credentialRecordOf(
+  credentials: ManagedCredentials,
+  clientIdHash: string | undefined,
+): Record<string, unknown> {
+  return {
     accessToken: credentials.accessToken,
     ...credentials.refreshToken === undefined ? {} : { refreshToken: credentials.refreshToken },
     expiresAt: credentials.expiresAt,
@@ -541,16 +546,84 @@ export async function saveManagedCredentials(directory: string, credentials: Man
     ...credentials.startUrl === undefined ? {} : { startUrl: credentials.startUrl },
     ...credentials.tokenEndpoint === undefined ? {} : { tokenEndpoint: credentials.tokenEndpoint },
     ...credentials.scope === undefined ? {} : { scope: credentials.scope },
+  }
+}
+
+/**
+ * Save any normalized credential beneath DSH home with private permissions.
+ *
+ * The account store is the authority; the single-credential file is kept in
+ * step because the `kiro-login` CLI and external tooling read it.
+ * @param directory - the credential directory this plugin owns.
+ * @param credentials - the credential a login or import produced.
+ * @param options - account targeting for a re-login, or a label for a new account.
+ * @returns the identifier of the account that now holds the credential.
+ */
+export async function saveManagedCredentials(
+  directory: string,
+  credentials: ManagedCredentials,
+  options: SaveManagedCredentialOptions = {},
+): Promise<{ accountId: string }> {
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  let clientIdHash: string | undefined
+  if (credentials.clientId !== undefined && credentials.clientSecret !== undefined) {
+    clientIdHash = createHash('sha256').update(credentials.clientId).digest('hex')
+    await atomicJson(join(directory, clientIdHash + '.json'), {
+      clientId: credentials.clientId,
+      clientSecret: credentials.clientSecret,
+    })
+  }
+  const record = credentialRecordOf(credentials, clientIdHash)
+  const saved = await new KiroAccountStore(directory).upsert({
+    credential: record,
+    authMethod: credentials.authMethod,
+    region: credentials.region,
+    ...credentials.profileArn === undefined ? {} : { profileArn: credentials.profileArn },
+    ...options.label === undefined ? {} : { label: options.label },
+    ...options.accountId === undefined ? {} : { accountId: options.accountId },
+    // Signing in selects what you just signed into, which is what the
+    // single-account plugin did by replacing the file. Re-authenticating a
+    // named account is not a selection change, so it keeps its status.
+    activate: options.activate ?? options.accountId === undefined,
   })
-  clearTokenCache()
+  // The mirror describes the account in use, which is not always the one this
+  // login wrote: re-authenticating an inactive account leaves it inactive.
+  await syncManagedCredentialFile(directory)
+  return saved
 }
 
-export function saveDeviceCredentials(directory: string, credentials: DeviceCredentials): Promise<void> {
-  return saveManagedCredentials(directory, credentials)
+/** Store device-flow credentials as a new or targeted account. */
+export function saveDeviceCredentials(
+  directory: string,
+  credentials: DeviceCredentials,
+  options: SaveManagedCredentialOptions = {},
+): Promise<{ accountId: string }> {
+  return saveManagedCredentials(directory, credentials, options)
 }
 
-/** Read only non-secret managed credential metadata for the status API. */
+/**
+ * Read only non-secret managed credential metadata for the status API.
+ *
+ * The account store wins over the single-credential file once it exists, so
+ * an installation that signed every account out reads as signed out instead of
+ * as still holding the credential it migrated from.
+ * @param directory - the credential directory this plugin owns.
+ * @returns credential metadata safe for the browser.
+ */
 export async function credentialSummary(directory: string): Promise<CredentialSummary> {
+  const store = new KiroAccountStore(directory)
+  if (await store.exists()) {
+    const snapshot = await store.snapshot()
+    const active = snapshot.accounts.find(account => account.active)
+    if (active === undefined) return { authenticated: false }
+    return {
+      authenticated: active.state !== 'unusable',
+      ...active.expiresAt === undefined ? {} : { expiresAt: new Date(active.expiresAt).toISOString() },
+      ...active.region === undefined ? {} : { region: active.region },
+      authMethod: kiroAuthMethod(active.authMethod, {}),
+      ...active.profileArn === undefined ? {} : { profileArn: active.profileArn },
+    }
+  }
   let parsed: unknown
   try {
     parsed = JSON.parse(await readFile(join(directory, TOKEN_FILE), 'utf8'))
@@ -586,17 +659,53 @@ async function unlinkIfPresent(path: string): Promise<void> {
   }
 }
 
-/** Delete only credentials owned by this plugin, leaving Kiro IDE files intact. */
+/**
+ * Delete only credentials owned by this plugin, leaving Kiro IDE files intact.
+ *
+ * Every stored account is removed, which is the historical meaning of signing
+ * out here; each account device registration goes with its credential.
+ * @param directory - the credential directory this plugin owns.
+ */
 export async function deleteDeviceCredentials(directory: string): Promise<void> {
-  let clientIdHash: string | undefined
+  const store = new KiroAccountStore(directory)
+  let legacyHash: string | undefined
   try {
     const parsed = record(JSON.parse(await readFile(join(directory, TOKEN_FILE), 'utf8')))
     const candidate = parsed === undefined ? undefined : stringField(parsed, 'clientIdHash')
-    if (candidate !== undefined && /^[a-f0-9]{64}$/u.test(candidate)) clientIdHash = candidate
+    if (candidate !== undefined && /^[a-f0-9]{64}$/u.test(candidate)) legacyHash = candidate
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
   }
+  const removed = await store.removeAll()
   await unlinkIfPresent(join(directory, TOKEN_FILE))
-  if (clientIdHash !== undefined) await unlinkIfPresent(join(directory, `${clientIdHash}.json`))
+  const hashes = new Set<string>()
+  if (legacyHash !== undefined) hashes.add(legacyHash)
+  for (const entry of removed) {
+    const hash = stringField(record(entry.credential) ?? {}, 'clientIdHash')
+    if (hash !== undefined && /^[a-f0-9]{64}$/u.test(hash)) hashes.add(hash)
+  }
+  for (const hash of hashes) await unlinkIfPresent(join(directory, hash + '.json'))
+  clearTokenCache()
+}
+
+/**
+ * Make the single-credential file mirror the active account.
+ *
+ * The account store is what the adapter resolves from, but the CLI and
+ * external tooling read the older file, so every account switch or removal
+ * leaves it describing the account that is actually in use.
+ * @param directory - the credential directory this plugin owns.
+ */
+export async function syncManagedCredentialFile(directory: string): Promise<void> {
+  const store = new KiroAccountStore(directory)
+  const captured = await store.capture()
+  const credential = captured === null ? undefined : await captured.read()
+  if (credential === undefined) {
+    await unlinkIfPresent(join(directory, TOKEN_FILE))
+    clearTokenCache()
+    return
+  }
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  await atomicJson(join(directory, TOKEN_FILE), credential)
   clearTokenCache()
 }

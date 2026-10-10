@@ -53,7 +53,23 @@ export {
   kiroCredentialDirectory,
   resolveToken,
   resolveTokenFromDirectories,
+  resolveTokenFromStore,
 } from './auth.ts'
+export {
+  defaultAccountLabel,
+  KIRO_ACCOUNTS_FILE,
+  KIRO_LEGACY_TOKEN_FILE,
+  KiroAccountStore,
+  MAX_KIRO_ACCOUNTS,
+} from './accounts.ts'
+export type {
+  CapturedKiroAccount,
+  KiroAccountSummary,
+  KiroAccountsDocument,
+  KiroAccountsSnapshot,
+  KiroAccountUpsert,
+  KiroStoredAccount,
+} from './accounts.ts'
 export type { KiroToken, TokenSourceOptions } from './auth.ts'
 export type { DirectoryTokenSourceOptions, KiroAuthMethod } from './auth.ts'
 export {
@@ -87,10 +103,12 @@ export {
   saveManagedCredentials,
   startDeviceLogin,
   startSocialDeviceLogin,
+  syncManagedCredentialFile,
 } from './login.ts'
 export type {
   DeviceCredentials,
   DeviceLoginOptions,
+  SaveManagedCredentialOptions,
   DeviceLoginPoll,
   DeviceLoginSession,
   ManagedCredentials,

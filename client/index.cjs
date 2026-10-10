@@ -14,6 +14,18 @@ window.__ModuleLoader__.load({
       title: 'Kiro',
       description: 'Connect a Kiro account, keep its token refreshed, and discover the models available to it.',
       account: 'Account',
+      accounts: 'Accounts',
+      addAccount: 'Add account',
+      useAccount: 'Use',
+      reconnect: 'Sign in again',
+      removeAccount: 'Remove',
+      removeAccountConfirm: 'Remove this account from dsh-kiro?',
+      activeAccount: 'Active',
+      accountReady: 'Ready',
+      accountNeedsRefresh: 'Refreshes on next use',
+      accountNeedsLogin: 'Needs sign-in',
+      accountsHint: 'Requests use the active account. The choice applies to every session.',
+      signOutAll: 'Sign out all',
       signedOut: 'Not signed in',
       managed: 'Managed by dsh-kiro',
       external: 'Using Kiro IDE / CLI sign-in',
@@ -91,6 +103,18 @@ window.__ModuleLoader__.load({
       title: 'Kiro',
       description: '连接 Kiro 账号、自动刷新令牌，并发现此账号可用的模型。',
       account: '账号',
+      accounts: '账号列表',
+      addAccount: '添加账号',
+      useAccount: '使用',
+      reconnect: '重新登录',
+      removeAccount: '移除',
+      removeAccountConfirm: '确定要从 dsh-kiro 移除此账号吗？',
+      activeAccount: '当前',
+      accountReady: '可用',
+      accountNeedsRefresh: '下次使用时刷新',
+      accountNeedsLogin: '需要登录',
+      accountsHint: '请求使用当前账号，该选择对所有会话生效。',
+      signOutAll: '退出所有账号',
       signedOut: '未登录',
       managed: '由 dsh-kiro 管理',
       external: '正在使用 Kiro IDE / CLI 登录',
@@ -332,8 +356,16 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
 .dshk-error{margin-top:10px;padding:9px 11px;border-radius:9px;background:#fef2f2;color:#b91c1c;font-size:12px;white-space:pre-wrap}
 .dshk-notice{margin-top:10px;padding:9px 11px;border-radius:9px;background:#f0fdf4;color:#15803d;font-size:12px}
 .dshk-empty{padding:18px;text-align:center;color:#9ca3af;font-size:13px}
-@media(max-width:620px){.dshk-grid{grid-template-columns:1fr}.dshk-field-wide{grid-column:auto}.dshk-auth-url-row{align-items:stretch;flex-direction:column}.dshk-head{align-items:flex-start;flex-direction:column}.dshk-usage-top{align-items:flex-start;flex-direction:column;gap:2px}.dshk-usage-metric{text-align:left}.dshk-model-sub{white-space:normal}}
-@media(prefers-color-scheme:dark){.dshk-notice{background:#0f2a1a;color:#86efac}.dshk-wrap{color:#f3f4f6}.dshk-card,.dshk-modal{border-color:#303642;background:#171a21}.dshk-modal-head{border-color:#303642}.dshk-status,.dshk-model{background:#1d2129;border-color:#303642;color:#d1d5db}.dshk-model:hover{border-color:#8b5cf6;background:#282333}.dshk-btn,.dshk-input,.dshk-method{border-color:#434b59;background:#20242d;color:#f3f4f6}.dshk-method:hover{border-color:#8b5cf6;background:#282333}.dshk-method-icon{background:#332a52;color:#c4b5fd}.dshk-close:hover{background:#272c35}.dshk-form,.dshk-usage{border-color:#303642}.dshk-field{color:#d1d5db}.dshk-code{border-color:#4338ca;background:#272447;color:#c7d2fe}.dshk-bar{background:#303642}.dshk-plan{background:#332a52;color:#c4b5fd}.dshk-link-btn{color:#c4b5fd}}
+.dshk-accounts{display:grid;gap:7px;margin-top:11px}
+.dshk-account{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border:1px solid #eef0f3;border-radius:10px;background:#fcfcfd}
+.dshk-account-active{border-color:#c4b5fd;background:#faf8ff}
+.dshk-account-text{display:grid;gap:2px;min-width:0}
+.dshk-account-name{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:650}
+.dshk-account-sub{overflow:hidden;color:#6b7280;font-size:10.5px;text-overflow:ellipsis;white-space:nowrap}
+.dshk-account-actions{display:flex;flex:none;gap:6px}
+.dshk-danger{color:#b91c1c}
+@media(max-width:620px){.dshk-grid{grid-template-columns:1fr}.dshk-field-wide{grid-column:auto}.dshk-auth-url-row{align-items:stretch;flex-direction:column}.dshk-head{align-items:flex-start;flex-direction:column}.dshk-usage-top{align-items:flex-start;flex-direction:column;gap:2px}.dshk-usage-metric{text-align:left}.dshk-model-sub{white-space:normal}.dshk-account{align-items:flex-start;flex-direction:column}.dshk-account-actions{flex-wrap:wrap}}
+@media(prefers-color-scheme:dark){.dshk-notice{background:#0f2a1a;color:#86efac}.dshk-wrap{color:#f3f4f6}.dshk-card,.dshk-modal{border-color:#303642;background:#171a21}.dshk-modal-head{border-color:#303642}.dshk-status,.dshk-model{background:#1d2129;border-color:#303642;color:#d1d5db}.dshk-model:hover{border-color:#8b5cf6;background:#282333}.dshk-btn,.dshk-input,.dshk-method{border-color:#434b59;background:#20242d;color:#f3f4f6}.dshk-method:hover{border-color:#8b5cf6;background:#282333}.dshk-method-icon{background:#332a52;color:#c4b5fd}.dshk-close:hover{background:#272c35}.dshk-form,.dshk-usage{border-color:#303642}.dshk-field{color:#d1d5db}.dshk-code{border-color:#4338ca;background:#272447;color:#c7d2fe}.dshk-bar{background:#303642}.dshk-plan{background:#332a52;color:#c4b5fd}.dshk-link-btn{color:#c4b5fd}.dshk-account{background:#1d2129;border-color:#303642}.dshk-account-active{border-color:#8b5cf6;background:#282333}.dshk-account-sub{color:#9ca3af}.dshk-danger{color:#fca5a5}}
 `
       document.head.appendChild(style)
     }
@@ -392,6 +424,9 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
       const [usage, setUsage] = useState(undefined)
       const [usageError, setUsageError] = useState('')
       const [notice, setNotice] = useState('')
+      // Set while the dialog is re-authenticating an existing account rather
+      // than adding one; empty means the next login lands on a new account.
+      const [targetAccountId, setTargetAccountId] = useState('')
 
       const updateField = useCallback((name, value) => {
         setFields((current) => ({ ...current, [name]: value }))
@@ -465,6 +500,8 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         catch (cause) { setUsageError(cause.message) } finally { setBusy('') }
       }, [])
 
+      const accountList = Array.isArray(status?.accounts?.accounts) ? status.accounts.accounts : []
+
       const login = useCallback(async (requestedMethod) => {
         const activeMethod = typeof requestedMethod === 'string' ? requestedMethod : method
         setBusy('login'); setError('')
@@ -483,10 +520,11 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
                   // Empty means "derive": Builder ID and Identity Center
                   // credentials look alike, so the origin is stated, not guessed.
                   credentialSource: fields.credentialSource,
+                  accountId: targetAccountId,
                 }
               : activeMethod === 'api-key'
-                ? { method: activeMethod, apiKey: fields.apiKey, region: fields.region }
-                : { method: activeMethod, credentials: fields.credentials }
+                ? { method: activeMethod, apiKey: fields.apiKey, region: fields.region, accountId: targetAccountId }
+                : { method: activeMethod, credentials: fields.credentials, accountId: targetAccountId }
             const next = await api('/credentials/import', { method: 'POST', body: JSON.stringify(payload) })
             setStatus(next)
             // Close and confirm here rather than waiting on a derived state
@@ -509,12 +547,18 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
           }
           const flow = await api('/login', {
             method: 'POST',
-            body: JSON.stringify({ method: activeMethod, region: fields.region, startUrl: fields.startUrl }),
+            body: JSON.stringify({
+              method: activeMethod,
+              region: fields.region,
+              startUrl: fields.startUrl,
+              // Empty means "add an account"; a value re-authenticates that one.
+              accountId: targetAccountId,
+            }),
           })
           setStatus((current) => ({ ...current, login: flow }))
           await load()
         } catch (cause) { setError(cause.message) } finally { setBusy('') }
-      }, [fields, load, method, noticeFor, refreshUsage])
+      }, [fields, load, method, noticeFor, refreshUsage, targetAccountId])
 
       const chooseMethod = useCallback((nextMethod) => {
         setMethod(nextMethod)
@@ -525,7 +569,9 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         }
       }, [login])
 
-      const openAuth = useCallback(() => {
+      // An account id means "sign this account in again"; no id adds one.
+      const openAuth = useCallback((accountId) => {
+        setTargetAccountId(typeof accountId === 'string' ? accountId : '')
         setError('')
         const pendingMethod = status?.login?.status === 'pending' ? status.login.method : null
         setSelectedMethod(pendingMethod)
@@ -533,7 +579,40 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         setAuthOpen(true)
       }, [status?.login])
 
-      const closeAuth = useCallback(() => setAuthOpen(false), [])
+      const closeAuth = useCallback(() => {
+        setTargetAccountId('')
+        setAuthOpen(false)
+      }, [])
+
+      const activateAccount = useCallback(async (accountId) => {
+        setBusy('accounts'); setError('')
+        try {
+          const next = await api('/accounts/activate', { method: 'POST', body: JSON.stringify({ accountId }) })
+          setStatus(next)
+          if (next?.authenticated) await refreshUsage()
+          else setUsage(undefined)
+        } catch (cause) { setError(cause.message) } finally { setBusy('') }
+      }, [refreshUsage])
+
+      const removeAccount = useCallback(async (account) => {
+        // The service requires a replacement when the active account goes while
+        // others remain, so the first remaining account takes over.
+        const remaining = accountList.filter((candidate) => candidate.id !== account.id)
+        if (typeof window.confirm === 'function' && !window.confirm(t('removeAccountConfirm'))) return
+        setBusy('accounts'); setError('')
+        try {
+          const next = await api('/accounts/remove', {
+            method: 'POST',
+            body: JSON.stringify({
+              accountId: account.id,
+              ...account.active && remaining.length > 0 ? { replacementId: remaining[0].id } : {},
+            }),
+          })
+          setStatus(next)
+          if (next?.authenticated) await refreshUsage()
+          else { setUsage(undefined); setUsageError('') }
+        } catch (cause) { setError(cause.message) } finally { setBusy('') }
+      }, [accountList, refreshUsage, t])
 
       useEffect(() => {
         if (!authOpen) return undefined
@@ -762,17 +841,54 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
           React.createElement('div', { className: 'dshk-head' },
             React.createElement('div', { className: 'dshk-heading' }, t('account')),
             React.createElement('div', { className: 'dshk-actions' },
-              status?.credentialSource !== 'dsh' && React.createElement('button', {
-                className: 'dshk-btn dshk-primary', disabled: !!busy, onClick: openAuth,
-              }, status?.authenticated ? t('connectManaged') : t('connectKiro')),
+              // Reachable while signed in too: a second account is added
+              // rather than replacing the one in use.
+              React.createElement('button', {
+                className: 'dshk-btn dshk-primary', disabled: !!busy, onClick: () => openAuth(''),
+              }, accountList.length > 0
+                ? t('addAccount')
+                : status?.authenticated ? t('connectManaged') : t('connectKiro')),
               status?.authenticated && React.createElement('button', {
                 className: 'dshk-btn', disabled: !!busy, onClick: refreshUsage,
               }, busy === 'usage' ? t('refreshingUsage') : t('refreshUsage')),
-              status?.credentialSource === 'dsh' && React.createElement('button', { className: 'dshk-btn', disabled: !!busy, onClick: logout }, t('logout')))),
+              status?.credentialSource === 'dsh' && React.createElement('button', {
+                className: 'dshk-btn', disabled: !!busy, onClick: logout,
+              }, accountList.length > 1 ? t('signOutAll') : t('logout')))),
           React.createElement('div', { className: 'dshk-status' },
             React.createElement('span', { className: `dshk-dot${status?.authenticated ? ' dshk-dot-on' : ''}` }),
             React.createElement('span', null, accountLabel),
             status?.region && React.createElement('span', null, `· ${status.region}`)),
+          accountList.length > 0 && React.createElement(React.Fragment, null,
+            React.createElement('div', { className: 'dshk-accounts' }, accountList.map((account) =>
+              React.createElement('div', {
+                className: `dshk-account${account.active ? ' dshk-account-active' : ''}`, key: account.id,
+              },
+              React.createElement('div', { className: 'dshk-account-text' },
+                React.createElement('span', { className: 'dshk-account-name' },
+                  account.label,
+                  account.active && React.createElement('span', { className: 'dshk-badge' }, t('activeAccount'))),
+                React.createElement('span', { className: 'dshk-account-sub' },
+                  [
+                    account.authMethod,
+                    account.region,
+                    account.state === 'ready'
+                      ? t('accountReady')
+                      : account.state === 'refresh-required' ? t('accountNeedsRefresh') : t('accountNeedsLogin'),
+                  ].filter(Boolean).join(' · '))),
+              React.createElement('div', { className: 'dshk-account-actions' },
+                !account.active && React.createElement('button', {
+                  className: 'dshk-btn', type: 'button', disabled: !!busy,
+                  onClick: () => activateAccount(account.id),
+                }, t('useAccount')),
+                React.createElement('button', {
+                  className: 'dshk-btn', type: 'button', disabled: !!busy,
+                  onClick: () => openAuth(account.id),
+                }, t('reconnect')),
+                React.createElement('button', {
+                  className: 'dshk-btn dshk-danger', type: 'button', disabled: !!busy,
+                  onClick: () => removeAccount(account),
+                }, t('removeAccount')))))),
+            React.createElement('div', { className: 'dshk-meta' }, t('accountsHint'))),
           status?.authenticated && React.createElement('div', { className: 'dshk-meta dshk-details' },
             status.authMethod && `${t('authMethod')}: ${status.authMethod}`,
             status.authMethod && status.profileArn && ' · ',

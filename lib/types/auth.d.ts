@@ -1,4 +1,5 @@
 /** Resolve, refresh, and normalize every Kiro credential shape supported by the plugin. */
+import { KiroAccountStore } from './accounts.ts';
 export declare const DEFAULT_REGION = "us-east-1";
 /**
  * Authentication variants compatible with Kiro and 9Router credential records.
@@ -51,3 +52,12 @@ export declare function clearTokenCache(): void;
 export declare function resolveToken(options: TokenSourceOptions): Promise<KiroToken>;
 /** Resolve the first present source, preferring DSH-managed credentials over Kiro's cache. */
 export declare function resolveTokenFromDirectories(directories: readonly string[], options: DirectoryTokenSourceOptions): Promise<KiroToken>;
+/**
+ * Resolve a usable token for one stored account.
+ * @param store - the multi-account store to read.
+ * @param options - refresh transports and the profile expiry buffer.
+ * @param accountId - the account to use; the active one when omitted.
+ * @returns the token requests and discovery authenticate with.
+ * @throws LlmError('MISSING_CREDENTIAL') when the store holds no such account.
+ */
+export declare function resolveTokenFromStore(store: KiroAccountStore, options: Omit<TokenSourceOptions, 'cacheDir' | 'persistRefresh'>, accountId?: string): Promise<KiroToken>;

@@ -120,10 +120,56 @@ export interface VerifiedImport {
 export declare function importApiKey(apiKey: string, regionValue: string | undefined, requestGet: LoginGetTransport, signal: AbortSignal): Promise<VerifiedImport>;
 /** Convert CLIProxyAPI-compatible Microsoft external-IdP JSON into managed credentials. */
 export declare function importExternalIdp(raw: unknown): ManagedCredentials;
-/** Save any normalized credential beneath DSH home with private permissions. */
-export declare function saveManagedCredentials(directory: string, credentials: ManagedCredentials): Promise<void>;
-export declare function saveDeviceCredentials(directory: string, credentials: DeviceCredentials): Promise<void>;
-/** Read only non-secret managed credential metadata for the status API. */
+/** Targeting and labelling a login supplies when it stores its credential. */
+export interface SaveManagedCredentialOptions {
+    /** Update this account instead of adding one, which is what a re-login does. */
+    accountId?: string;
+    /** Human label for a newly added account. */
+    label?: string;
+    /** Make the saved account active. Defaults to true. */
+    activate?: boolean;
+}
+/**
+ * Save any normalized credential beneath DSH home with private permissions.
+ *
+ * The account store is the authority; the single-credential file is kept in
+ * step because the `kiro-login` CLI and external tooling read it.
+ * @param directory - the credential directory this plugin owns.
+ * @param credentials - the credential a login or import produced.
+ * @param options - account targeting for a re-login, or a label for a new account.
+ * @returns the identifier of the account that now holds the credential.
+ */
+export declare function saveManagedCredentials(directory: string, credentials: ManagedCredentials, options?: SaveManagedCredentialOptions): Promise<{
+    accountId: string;
+}>;
+/** Store device-flow credentials as a new or targeted account. */
+export declare function saveDeviceCredentials(directory: string, credentials: DeviceCredentials, options?: SaveManagedCredentialOptions): Promise<{
+    accountId: string;
+}>;
+/**
+ * Read only non-secret managed credential metadata for the status API.
+ *
+ * The account store wins over the single-credential file once it exists, so
+ * an installation that signed every account out reads as signed out instead of
+ * as still holding the credential it migrated from.
+ * @param directory - the credential directory this plugin owns.
+ * @returns credential metadata safe for the browser.
+ */
 export declare function credentialSummary(directory: string): Promise<CredentialSummary>;
-/** Delete only credentials owned by this plugin, leaving Kiro IDE files intact. */
+/**
+ * Delete only credentials owned by this plugin, leaving Kiro IDE files intact.
+ *
+ * Every stored account is removed, which is the historical meaning of signing
+ * out here; each account device registration goes with its credential.
+ * @param directory - the credential directory this plugin owns.
+ */
 export declare function deleteDeviceCredentials(directory: string): Promise<void>;
+/**
+ * Make the single-credential file mirror the active account.
+ *
+ * The account store is what the adapter resolves from, but the CLI and
+ * external tooling read the older file, so every account switch or removal
+ * leaves it describing the account that is actually in use.
+ * @param directory - the credential directory this plugin owns.
+ */
+export declare function syncManagedCredentialFile(directory: string): Promise<void>;

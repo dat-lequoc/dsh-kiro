@@ -38,6 +38,7 @@ pnpm dsh --profile web
 - 在 **Settings → Kiro** 中使用 AWS Builder ID、IAM Identity Center、Google 或 GitHub 登录。
 - 导入 Kiro refresh token、API key 或兼容 CLIProxyAPI 的 Microsoft external-IdP 凭据。
 - 导入会报告实际验证到的内容：API key 先与线上模型目录校验，因此页面可以显示`凭据已验证 · 19 个模型可用`；refresh token 因为换取到了真实 access token 而同样报告已验证；external-IdP JSON 只在本地做格式转换，因此显示`凭据已保存`，不会声称做过并不存在的校验。成功后对话框自动关闭，页面上粘贴的密钥被清除，并按当前生效的账号重新读取使用量卡片。
+- 可同时保存多个登录（Builder ID、IAM Identity Center、Google、GitHub、导入的 token、API key 与 external-IdP 凭据可任意组合），并在 **Settings → Kiro** 中选择当前账号。
 - 使用随包提供的 `kiro-login` 命令从终端完成同类登录。
 - 自动发现并保存账号的 CodeWhisperer profile ARN，使刷新后的 token 仍使用正确 profile。
 - 没有插件自管登录时，自动回退到 Kiro IDE/CLI 的 `~/.aws/sso/cache` 凭据。
@@ -93,6 +94,18 @@ kiro-login --logout
 
 1. dsh-kiro 自管凭据
 2. Kiro IDE/CLI SSO 缓存
+
+### 多账号
+
+插件会保存你添加的每一个登录，请求使用其中的**当前账号**。账号保存在 `$DSH_HOME/storages/kiro-auth/accounts.json`：单个原子写入、仅本人可读的文档，包含全部凭据与当前选择。
+
+- **添加账号**会保存新凭据并切换为当前账号，与以往登录的语义一致；新增不会覆盖已有账号，若要重新认证某一行请用 **重新登录**，此时不会改变当前选择。
+- 每行显示名称、认证方式、region 与凭据状态（*可用*、*下次使用时刷新*、*需要登录*），并提供 **使用**（切换为当前账号）、**重新登录**（只重新认证该账号）与 **移除**。
+- 移除当前账号时，若还有其他账号，选择会自动交给另一个已保存账号。**退出所有账号**会删除全部账号及其设备注册；Kiro IDE/CLI 回退不受影响，在没有自管账号时仍然生效。
+- 该选择对整个凭据存储生效、跨会话保持。已开始的请求继续使用它开始时捕获的账号；刷新 token 不会覆盖刷新期间完成的登录。
+- `kiro-auth-token.json` 会与当前账号保持同步，因此 CLI 与旧版本工具读取到的始终是实际在用的凭据。
+
+只保留旧的单凭据文件的安装会被当作一个导入账号读取；首次写入多账号文档时，该文件保持原样不动。
 
 ## 模型发现与推理档位
 

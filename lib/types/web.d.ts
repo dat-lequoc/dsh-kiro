@@ -6,7 +6,8 @@ import type { KiroToken } from './auth.ts';
 import type { KiroModelDiscovery } from './discovery.ts';
 import type { FileModelSettingsStore } from './model-settings.ts';
 import type { KiroUsageService } from './usage.ts';
-interface WebDependencies {
+/** Everything the Kiro Web API needs from the running plugin. */
+export interface WebDependencies {
     managedDirectory: string;
     options: () => KiroConnectionOptions;
     discovery: KiroModelDiscovery;
@@ -16,4 +17,3 @@ interface WebDependencies {
 }
 /** Register the optional DSH Web management API. */
 export declare function registerWebApi(ctx: Context, dependencies: WebDependencies): void;
-export {};

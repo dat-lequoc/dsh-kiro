@@ -5,6 +5,7 @@ import { readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { LlmError } from '@deepseek-ai/dsh-llm'
+import { KiroAccountStore } from './accounts.ts'
 import { assertMicrosoftTokenEndpoint } from './external-idp.ts'
 import { assertKiroProfileArn } from './profile.ts'
 import { assertKiroRegion } from './region.ts'
@@ -97,6 +98,21 @@ export interface TokenSourceOptions {
 
 export interface DirectoryTokenSourceOptions extends Omit<TokenSourceOptions, 'cacheDir' | 'persistRefresh'> {
   writableDirectories?: readonly string[]
+}
+
+/**
+ * One credential location a resolve may read, and refresh into when this
+ * plugin owns it.
+ */
+interface TokenSource {
+  /** Token-cache key: one resolved token per account, not per directory. */
+  key: string
+  /** Directory holding this credential device registration, when it needs one. */
+  directory: string
+  /** Read the raw credential record. */
+  read: () => Promise<Record<string, unknown>>
+  /** Persist a refreshed record; absent for a credential this plugin does not own. */
+  write?: (next: Record<string, unknown>) => Promise<void>
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -328,27 +344,30 @@ async function atomicTokenFile(directory: string, value: Record<string, unknown>
   await rename(temporary, path)
 }
 
-async function persist(
-  directory: string,
-  source: TokenFile,
+/**
+ * The record a refreshed token writes back, preserving every other field the
+ * credential arrived with.
+ */
+function credentialRecord(
+  file: TokenFile,
   token: KiroToken,
   refreshToken: string | undefined,
-): Promise<void> {
-  await atomicTokenFile(directory, {
-    ...source.raw,
+): Record<string, unknown> {
+  return {
+    ...file.raw,
     accessToken: token.accessToken,
     ...refreshToken === undefined ? {} : { refreshToken },
     expiresAt: new Date(token.expiresAt).toISOString(),
     region: token.region,
     authMethod: token.authMethod,
     ...token.profileArn === undefined ? {} : { profileArn: token.profileArn },
-  })
+  }
 }
 
 async function withProfile(
   result: KiroToken,
-  source: TokenFile,
-  directory: string,
+  file: TokenFile,
+  source: TokenSource,
   options: TokenSourceOptions,
   refreshToken?: string,
 ): Promise<KiroToken> {
@@ -363,51 +382,68 @@ async function withProfile(
   }
   if (profileArn === undefined) return result
   const enriched = { ...result, profileArn: assertKiroProfileArn(profileArn) }
-  cached.set(directory, enriched)
-  if (options.persistRefresh === true) await persist(directory, source, enriched, refreshToken ?? source.refreshToken)
+  cached.set(source.key, enriched)
+  if (source.write !== undefined) {
+    await source.write(credentialRecord(file, enriched, refreshToken ?? file.refreshToken))
+  }
   return enriched
 }
 
-/** Resolve a currently usable token from one credential directory. */
-export async function resolveToken(options: TokenSourceOptions): Promise<KiroToken> {
+/** Resolve a usable token from one credential source, refreshing and persisting as needed. */
+async function resolveFromSource(source: TokenSource, options: TokenSourceOptions): Promise<KiroToken> {
   const now = Date.now()
-  const directory = options.cacheDir ?? kiroCredentialDirectory()
-  const cachedToken = cached.get(directory)
+  const cachedToken = cached.get(source.key)
   if (cachedToken !== undefined && now < cachedToken.expiresAt - options.expiryBufferMs) return cachedToken
-  const source = normalizeTokenFile(await readJsonFile(join(directory, TOKEN_FILE), 'token file'))
+  const file = normalizeTokenFile(await source.read())
   let region: string
   try {
-    region = assertKiroRegion(source.region ?? DEFAULT_REGION)
+    region = assertKiroRegion(file.region ?? DEFAULT_REGION)
   } catch (error: unknown) {
     throw new LlmError('Kiro token file contains an invalid AWS region', 'INVALID_CREDENTIAL', { cause: error })
   }
   let profileArn: string | undefined
   try {
-    profileArn = source.profileArn === undefined ? undefined : assertKiroProfileArn(source.profileArn)
+    profileArn = file.profileArn === undefined ? undefined : assertKiroProfileArn(file.profileArn)
   } catch (error: unknown) {
     throw new LlmError('Kiro token file contains an invalid profile ARN', 'INVALID_CREDENTIAL', { cause: error })
   }
-  const fileExpiry = source.authMethod === 'api_key'
+  const fileExpiry = file.authMethod === 'api_key'
     ? NON_EXPIRING
-    : source.expiresAt === undefined ? 0 : Date.parse(source.expiresAt)
-  if (source.accessToken !== undefined && Number.isFinite(fileExpiry) && now < fileExpiry - options.expiryBufferMs) {
+    : file.expiresAt === undefined ? 0 : Date.parse(file.expiresAt)
+  if (file.accessToken !== undefined && Number.isFinite(fileExpiry) && now < fileExpiry - options.expiryBufferMs) {
     const current: KiroToken = {
-      accessToken: source.accessToken,
+      accessToken: file.accessToken,
       region,
       expiresAt: fileExpiry,
-      authMethod: source.authMethod,
+      authMethod: file.authMethod,
       ...profileArn === undefined ? {} : { profileArn },
     }
-    const result = await withProfile(current, source, directory, options)
-    cached.set(directory, result)
+    const result = await withProfile(current, file, source, options)
+    cached.set(source.key, result)
     return result
   }
-  const refreshed = await refresh(source, directory, region, options)
+  const refreshed = await refresh(file, source.directory, region, options)
   let result = refreshed.token
-  if (options.persistRefresh === true) await persist(directory, source, result, refreshed.refreshToken)
-  result = await withProfile(result, source, directory, options, refreshed.refreshToken)
-  cached.set(directory, result)
+  if (source.write !== undefined) await source.write(credentialRecord(file, result, refreshed.refreshToken))
+  result = await withProfile(result, file, source, options, refreshed.refreshToken)
+  cached.set(source.key, result)
   return result
+}
+
+/** Resolve a currently usable token from one credential directory. */
+export async function resolveToken(options: TokenSourceOptions): Promise<KiroToken> {
+  const directory = options.cacheDir ?? kiroCredentialDirectory()
+  return resolveFromSource({
+    key: directory,
+    directory,
+    read: async () => {
+      const value = await readJsonFile(join(directory, TOKEN_FILE), 'token file')
+      return value as Record<string, unknown>
+    },
+    ...options.persistRefresh === true
+      ? { write: async (next: Record<string, unknown>) => { await atomicTokenFile(directory, next) } }
+      : {},
+  }, options)
 }
 
 /** Resolve the first present source, preferring DSH-managed credentials over Kiro's cache. */
@@ -417,11 +453,25 @@ export async function resolveTokenFromDirectories(
 ): Promise<KiroToken> {
   const unique = [...new Set(directories)]
   const writable = new Set(options.writableDirectories ?? [])
+  const { writableDirectories: _writableDirectories, ...resolveOptions } = options
   let lastMissing: unknown
   for (const cacheDir of unique) {
+    const store = new KiroAccountStore(cacheDir)
+    // A written document is authoritative for its directory: an installation
+    // whose accounts were all signed out must not silently fall back to the
+    // single-file credential it migrated from.
+    if (await store.exists()) {
+      try {
+        return await resolveTokenFromStore(store, resolveOptions)
+      } catch (error: unknown) {
+        if ((error as { code?: unknown }).code !== 'MISSING_CREDENTIAL') throw error
+        lastMissing = error
+        continue
+      }
+    }
     try {
       return await resolveToken({
-        ...options,
+        ...resolveOptions,
         cacheDir,
         persistRefresh: writable.has(cacheDir),
       })
@@ -432,4 +482,39 @@ export async function resolveTokenFromDirectories(
   }
   if (lastMissing !== undefined) throw lastMissing
   throw new LlmError('No Kiro credential sources were configured', 'MISSING_CREDENTIAL')
+}
+
+/**
+ * Resolve a usable token for one stored account.
+ * @param store - the multi-account store to read.
+ * @param options - refresh transports and the profile expiry buffer.
+ * @param accountId - the account to use; the active one when omitted.
+ * @returns the token requests and discovery authenticate with.
+ * @throws LlmError('MISSING_CREDENTIAL') when the store holds no such account.
+ */
+export async function resolveTokenFromStore(
+  store: KiroAccountStore,
+  options: Omit<TokenSourceOptions, 'cacheDir' | 'persistRefresh'>,
+  accountId?: string,
+): Promise<KiroToken> {
+  const captured = await store.capture(accountId)
+  if (captured === null) {
+    throw new LlmError('Kiro has no signed-in account; add one in Settings, Kiro', 'MISSING_CREDENTIAL')
+  }
+  return resolveFromSource({
+    key: store.directory + '\u0000' + captured.accountId,
+    directory: store.directory,
+    read: async () => {
+      const credential = await captured.read()
+      if (credential === undefined) {
+        throw new LlmError('Kiro account ' + captured.accountId + ' is no longer stored', 'MISSING_CREDENTIAL')
+      }
+      return credential
+    },
+    // The refresh is written back into the account it came from, and a login
+    // that landed meanwhile keeps its result instead of being overwritten.
+    write: async (next: Record<string, unknown>) => {
+      await captured.modify(() => next)
+    },
+  }, options)
 }

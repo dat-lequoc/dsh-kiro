@@ -37,6 +37,7 @@ Built `lib/` artifacts are committed, so a GitHub install does not need to execu
 
 - Sign in from **Settings → Kiro** with AWS Builder ID, IAM Identity Center, Google, or GitHub.
 - Import a Kiro refresh token, API key, or CLIProxyAPI-compatible Microsoft external-IdP credential.
+- Keep several sign-ins at once — any mix of Builder ID, IAM Identity Center, Google, GitHub, imported tokens, API keys, and external-IdP credentials — and choose the active account from **Settings → Kiro**.
 - Sign in with the same methods from a terminal using the included `kiro-login` command.
 - Discover and persist the account's CodeWhisperer profile ARN so refreshed tokens keep the correct profile.
 - Fall back to Kiro IDE/CLI's existing `~/.aws/sso/cache` sign-in when no plugin-managed login exists.
@@ -98,6 +99,18 @@ Credential priority is:
 
 1. dsh-kiro managed credential
 2. Kiro IDE/CLI SSO cache
+
+### Several accounts
+
+The plugin stores as many sign-ins as you add, and requests use the **active** one. Accounts live in `$DSH_HOME/storages/kiro-auth/accounts.json`: one atomic, owner-only document holding every credential and the current selection.
+
+- **Add account** stores another credential and uses it, which is what signing in here has always meant. Adding never overwrites an existing account — **Sign in again** re-authenticates one row instead, without moving the selection.
+- Each row shows its label, method, region, and credential state — *Ready*, *Refreshes on next use*, or *Needs sign-in* — with **Use** to activate it, **Sign in again** to re-authenticate that account specifically, and **Remove** to delete it.
+- Removing the active account while others remain hands the selection to another stored account. **Sign out all** removes every account and its device registration; the Kiro IDE/CLI fallback is untouched and applies again once nothing managed remains.
+- The selection is global to this credential store across sessions. A request already streaming keeps the account it started with, and a token refresh never overwrites a login that landed while it was running.
+- `kiro-auth-token.json` is kept in step with the active account, so the CLI and older tooling keep reading the credential actually in use.
+
+An installation that still holds only the older single-credential file is read as one imported account; the file is left exactly as it is the first time the multi-account document is written.
 
 ## Model discovery and reasoning
 
