@@ -19,7 +19,7 @@
  */
 
 import { contentHasImage, LlmError } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
+import type { AssistantMessage, ContentBlock, GenerateOptions, RequestMessage, ToolResultMessage } from '@deepseek-ai/dsh-llm'
 import type {
   WireHistoryEntry,
   WireImageBlock,
@@ -255,10 +255,8 @@ function assertNoImages(blocks: readonly ContentBlock[], role: string): void {
 /**
  * Collect the wire images for one user message, in content order.
  *
- * Images nested in a tool result are hoisted onto the same user turn: the
- * service's `ToolResultContentBlock` is a union of text and json only, so a
- * screenshot returned by a tool has no seat of its own, and the enclosing turn
- * is the nearest place that preserves it rather than discarding it.
+ * Tool-role content is passed through the same image collection as user
+ * content; the service has no separate image seat for a tool result.
  * @param blocks - blocks from one user message.
  * @param prepared - wire images already read for this request.
  * @returns wire image blocks in the order they appear.
@@ -280,7 +278,7 @@ function imagesOf(
           )
         }
         images.push(image)
-      } else if (block.type === 'tool-result') walk(block.content)
+      }
     }
   }
   walk(blocks)
@@ -304,19 +302,17 @@ function assertToolName(name: string): string {
 }
 
 /** Serialize the tool-result blocks of one message. */
-function toolResultsOf(message: Message): WireToolResult[] {
-  return message.content
-    .filter(block => block.type === 'tool-result')
-    .map(block => ({
-      toolUseId: block.toolCallId,
-      // Empty tool output still needs content on the wire.
-      content: [{ text: flattenText(block.content) || '(no output)' }],
-      status: block.isError === true ? 'error' as const : 'success' as const,
-    }))
+function toolResultsOf(message: ToolResultMessage): WireToolResult[] {
+  return [{
+    toolUseId: message.toolCallId,
+    // Empty tool output still needs content on the wire.
+    content: [{ text: flattenText(message.content) || '(no output)' }],
+    status: message.isError === true ? 'error' : 'success',
+  }]
 }
 
 /** Serialize the tool-call blocks of one assistant message. */
-function toolUsesOf(message: Message): WireToolUse[] {
+function toolUsesOf(message: AssistantMessage): WireToolUse[] {
   return message.content
     .filter(block => block.type === 'tool-call')
     .map(block => ({
@@ -359,7 +355,7 @@ interface UserTurn {
  * @returns the folded turns, each tagged with its role.
  */
 function foldTurns(
-  messages: readonly Message[],
+  messages: readonly RequestMessage[],
   images: PreparedImages,
 ): (
   | { role: 'user'; turn: UserTurn }
@@ -382,18 +378,20 @@ function foldTurns(
       turns.push({ role: 'assistant', text, toolUses })
       continue
     }
-    // Both `user` and `system` roles reach the model as user content: Kiro has
-    // no system slot, and a mid-conversation system message is context.
-    const toolResults = toolResultsOf(message)
+    // Tool results become user-turn context because Kiro has no tool-role
+    // history entry. System, developer, and user content reaches Kiro as user
+    // text; Kiro has no system slot and developer tool changes are empty.
+    const toolResults = message.role === 'tool' ? toolResultsOf(message) : []
+    const messageText = message.role === 'tool' ? '' : text
     const turnImages = imagesOf(message.content, images)
     const last = turns.at(-1)
     if (last?.role === 'user') {
-      last.turn.text = [last.turn.text, text].filter(part => part.length > 0).join('\n\n')
+      last.turn.text = [last.turn.text, messageText].filter(part => part.length > 0).join('\n\n')
       last.turn.toolResults = [...last.turn.toolResults, ...toolResults]
       last.turn.images = [...last.turn.images, ...turnImages]
       continue
     }
-    turns.push({ role: 'user', turn: { text, toolResults, images: turnImages } })
+    turns.push({ role: 'user', turn: { text: messageText, toolResults, images: turnImages } })
   }
   return turns
 }

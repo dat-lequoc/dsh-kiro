@@ -29,6 +29,10 @@ pnpm dsh --profile web
 
 仓库已提交构建后的 `lib/`，所以从 GitHub 安装时不需要执行依赖构建脚本。
 
+<p align="center">
+  <img src="assets/settings-kiro.png" alt="Settings → Kiro：账号状态、credits 使用量与实时模型选择器" width="820">
+</p>
+
 ## 功能
 
 - 在 **Settings → Kiro** 中使用 AWS Builder ID、IAM Identity Center、Google 或 GitHub 登录。

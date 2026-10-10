@@ -29,6 +29,10 @@ pnpm dsh --profile web
 
 Built `lib/` artifacts are committed, so a GitHub install does not need to execute a dependency build script.
 
+<p align="center">
+  <img src="assets/settings-kiro.png" alt="Settings → Kiro: account status, credit usage, and the live model selector" width="820">
+</p>
+
 ## Features
 
 - Sign in from **Settings → Kiro** with AWS Builder ID, IAM Identity Center, Google, or GitHub.

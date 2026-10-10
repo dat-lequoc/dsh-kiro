@@ -14,11 +14,14 @@
  * @module dsh-kiro
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
+import '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/cordis-plugin-loader'
+import { isVolatile } from '@deepseek-ai/cosmokit'
 import z from '@deepseek-ai/schemastery'
 import { resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
 import type { ModelModality, RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
-import { deepEqualJson, installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import {
   DEFAULT_CONTEXT_WINDOW,
@@ -110,7 +113,7 @@ export type * from './types.ts'
 export const name = 'dsh-kiro'
 export const inject = ['llm']
 
-const NS = settingsNamespace('llm-kiro')
+const NS = 'llm-kiro'
 /** The single provider route this plugin owns. */
 const PROVIDER = 'kiro'
 /** Refresh a token this long before its actual expiry. */
@@ -166,25 +169,33 @@ export interface Config {
    * `claude-*` models only through a permitted proxy, while the open-weight
    * models answer without one. An invalid value fails plugin loading.
    */
-  proxyUrl?: string
+  proxyUrl: Volatile<string | undefined>
   /** Region selecting the endpoint; omitted follows the signed-in token file. */
-  region?: string
+  region: Volatile<string | undefined>
   /** CodeWhisperer profile ARN; omitted uses the account default. */
-  profileArn?: string
+  profileArn: Volatile<string | undefined>
   /** Deployment thinking policy; `disabled` suppresses model reasoning. */
-  thinking?: 'enabled' | 'disabled'
+  thinking: Volatile<'enabled' | 'disabled' | undefined>
   /** Optional provider-wide override; omission follows each model's live default. */
-  reasoningEffort?: 'none' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  reasoningEffort: Volatile<'none' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined>
   /** Positive context capacity used when the selected model has no exact value (default 200,000). */
-  defaultContextWindow?: number
+  defaultContextWindow: Volatile<number>
   /** Advisory models shown by discovery consumers; defaults to the verified account tier. */
-  models?: KiroCatalogModel[]
+  models: Volatile<KiroCatalogModel[]>
   /** Maximum provider idle time while one stream read is outstanding (default five minutes). */
-  streamIdleTimeoutMs?: number
+  streamIdleTimeoutMs: Volatile<number>
   /** Refresh the access token this long before expiry (default five minutes). */
-  tokenExpiryBufferMs?: number
+  tokenExpiryBufferMs: Volatile<number>
   /** Provider-owned model-request retry policy; omission uses normal defaults. */
-  retryPolicy?: RetryPolicyConfig
+  retryPolicy: Volatile<RetryPolicyConfig | undefined>
+}
+
+/** Plain values accepted by the provider resolver. */
+export type Options = { [K in keyof Config]?: Config[K] extends Volatile<infer T> ? Exclude<T, undefined> : never }
+
+/** Read the current value behind every validated configuration reference. */
+export function plainOptions(config: Config): Options {
+  return Object.fromEntries(Object.entries(config).map(([key, value]) => [key, isVolatile(value) ? value.get() : value]))
 }
 
 const catalogModel: z<KiroCatalogModel> = z.object({
@@ -206,17 +217,17 @@ const catalogModel: z<KiroCatalogModel> = z.object({
   }),
 })
 
-export const Config: z<Config> = z.object({
-  proxyUrl: z.string(),
-  region: z.string(),
-  profileArn: z.string(),
-  thinking: z.union(['enabled', 'disabled']),
-  reasoningEffort: z.union(['none', 'off', 'low', 'medium', 'high', 'xhigh', 'max']),
-  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
-  models: z.array(catalogModel).default(DEFAULT_MODELS),
-  streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
-  tokenExpiryBufferMs: z.number().min(0).max(MAX_TIMER_DELAY_MS).default(DEFAULT_TOKEN_EXPIRY_BUFFER_MS),
-  retryPolicy: RetryPolicySchema,
+export const Config = z.object({
+  proxyUrl: z.string().volatile(),
+  region: z.string().volatile(),
+  profileArn: z.string().volatile(),
+  thinking: z.union(['enabled', 'disabled']).volatile(),
+  reasoningEffort: z.union(['none', 'off', 'low', 'medium', 'high', 'xhigh', 'max']).volatile(),
+  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).volatile(),
+  models: z.array(catalogModel).default(DEFAULT_MODELS).volatile(),
+  streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS).volatile(),
+  tokenExpiryBufferMs: z.number().min(0).max(MAX_TIMER_DELAY_MS).default(DEFAULT_TOKEN_EXPIRY_BUFFER_MS).volatile(),
+  retryPolicy: RetryPolicySchema.volatile(),
 })
 
 /**
@@ -317,7 +328,7 @@ function resolveModels(models: readonly KiroCatalogModel[] | undefined): KiroCat
  * @throws when a field is present but unusable (a malformed proxy URL, a
  *   duplicate catalog id, an out-of-range timeout).
  */
-export function resolveAdapterOptions(config: Config): ResolvedKiroOptions {
+export function resolveAdapterOptions(config: Options): ResolvedKiroOptions {
   if (config.thinking === 'disabled'
     && config.reasoningEffort !== undefined
     && config.reasoningEffort !== 'off'
@@ -366,11 +377,11 @@ export function resolveAdapterOptions(config: Config): ResolvedKiroOptions {
 }
 
 export function apply(ctx: Context, config: Config): void {
-  let current: () => Config = () => config
-  let lastRaw: Config | undefined
+  ctx.inject(['settings'], (child) => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
+  let lastRaw: Options | undefined
   let lastGood: ResolvedKiroOptions | undefined
   const options = (): ResolvedKiroOptions => {
-    const raw = current()
+    const raw = plainOptions(config)
     if (raw === lastRaw && lastGood !== undefined) return lastGood
     try {
       const next = resolveAdapterOptions(raw)
@@ -454,12 +465,7 @@ export function apply(ctx: Context, config: Config): void {
     registeredPolicy = policy
   }
 
-  installSettingsSection(ctx, NS, Config, config, {
-    setSource: (source) => {
-      current = source
-    },
-    onChange: ensureRegistrationFacts,
-  })
+  ctx.on('loader/volatile-update', ensureRegistrationFacts)
   registerWebApi(ctx, {
     managedDirectory,
     options,
