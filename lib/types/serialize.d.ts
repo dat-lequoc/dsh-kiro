@@ -14,6 +14,9 @@
  * - Tool results are per-turn context on the user message that carries them,
  *   and the service rejects a result whose `toolUseId` no history entry
  *   issued, so unmatched results degrade to text.
+ * - Tool schemas and replayed calls carry names the service accepts: a harness
+ *   name outside its `^[A-Za-z][A-Za-z0-9_]{0,63}$` grammar is translated onto
+ *   one, and the translator reports the call back under the harness name.
  * - History is capped by entry count, not tokens: past the cap the service
  *   answers `Input is too long.`, so the oldest entries fold into one text turn.
  *
@@ -101,6 +104,40 @@ export declare function buildEffortRequestFields(effort: string | undefined, nat
 export declare function buildModelRequestFields(effort: string | undefined, native?: NativeEffortConfig, maxTokens?: number, limits?: ModelLimits): Record<string, unknown> | undefined;
 /** Wire images for one request, keyed by the attachment they were read from. */
 export type PreparedImages = ReadonlyMap<string, WireImageBlock>;
+/**
+ * Map a harness tool name onto one Kiro accepts.
+ *
+ * The harness leaves tool names unconstrained and MCP servers commonly publish
+ * names the service rejects (`mcp__context7__query-docs`), while CodeWhisperer
+ * enforces `^[A-Za-z][A-Za-z0-9_]{0,63}$` on every tool it is offered. A name
+ * the service already accepts is sent verbatim, so the ordinary built-in tools
+ * keep the ids the model has always seen. Anything else is translated:
+ *
+ * - every character outside `[A-Za-z0-9_]` becomes `_`,
+ * - a leading non-letter is prefixed, because the pattern demands one,
+ * - a hash of the original name is appended, so two names that differ only in
+ *   translated characters (`a-b` and `a_b`) stay distinct and no mapping has to
+ *   be remembered between requests — the same name always lands on the same
+ *   wire name, which keeps replayed history and the provider's cached prefix
+ *   consistent, and the translator can rebuild the reverse map from the tools it
+ *   sent.
+ *
+ * @param name - the harness tool name.
+ * @returns a name matching `TOOL_NAME_PATTERN`, unchanged when it already did.
+ */
+export declare function wireToolName(name: string): string;
+/**
+ * Build the reverse map from each wire tool name back to its harness name.
+ *
+ * The translator needs it to report a model's tool call under the name the
+ * harness registered, and it is derived from the same tool list the request
+ * carried, so the round trip cannot drift from what the model was offered.
+ * @param tools - the request's tool declarations.
+ * @returns wire name to harness name; empty when the request carried no tools.
+ */
+export declare function toolNameIndex(tools: readonly {
+    name: string;
+}[] | undefined): ReadonlyMap<string, string>;
 /**
  * Build the complete wire request.
  *

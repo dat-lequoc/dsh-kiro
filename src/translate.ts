@@ -413,6 +413,9 @@ export function finishReasonOf(
 /**
  * Translate decoded frames into harness chunks.
  * @param frames - decoded event-stream frames in arrival order.
+ * @param contextWindow - the model's context capacity, when discovery supplied one.
+ * @param toolNames - wire tool name to harness tool name, for requests whose
+ *   tool names the serializer had to translate; absent when it translated none.
  * @returns deltas as they arrive, every `block-end`, exact terminal `usage`
  *   when supplied by Kiro, then one `finish`.
  * @throws `LlmError` for an in-band service exception frame or a malformed payload.
@@ -420,6 +423,7 @@ export function finishReasonOf(
 export async function* translate(
   frames: AsyncIterable<WireFrame>,
   contextWindow?: number,
+  toolNames?: ReadonlyMap<string, string>,
 ): AsyncGenerator<StreamChunk> {
   const router = new TextRouter()
   const guard = new LegacyMarkerGuard()
@@ -506,7 +510,13 @@ export async function* translate(
           toolBlocks.set(event.toolUseId, block)
           yield { type: 'block-start', index: block.index, blockType: 'tool-call' }
         }
-        if (event.name !== undefined) block.name = event.name
+        // The model answers with the wire name the serializer offered it, which
+        // differs from the harness name whenever one had to be translated; the
+        // harness resolves tool calls by its own name, so report that one.
+        const name = event.name === undefined
+          ? undefined
+          : toolNames?.get(event.name) ?? event.name
+        if (name !== undefined) block.name = name
         const fragment = event.input ?? ''
         block.text += fragment
         yield {

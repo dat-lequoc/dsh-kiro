@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { EMPTY_RESPONSE_CODE } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { decodeFrames } from '../src/eventstream.ts'
+import { wireToolName } from '../src/serialize.ts'
 import { TextRouter, translate } from '../src/translate.ts'
 import type { WireFrame } from '../src/types.ts'
 import { chunked, frame, join, metadataFrame, textFrame, toolFrame } from './frames.ts'
@@ -24,8 +25,12 @@ async function collect(chunks: AsyncIterable<StreamChunk>): Promise<StreamChunk[
 }
 
 /** Translate a byte buffer end to end, as the adapter does. */
-function run(buffer: Uint8Array, chunkSize = 4096): Promise<StreamChunk[]> {
-  return collect(translate(decodeFrames(chunked(buffer, chunkSize))))
+function run(
+  buffer: Uint8Array,
+  chunkSize = 4096,
+  toolNames?: ReadonlyMap<string, string>,
+): Promise<StreamChunk[]> {
+  return collect(translate(decodeFrames(chunked(buffer, chunkSize)), undefined, toolNames))
 }
 
 /** Concatenated text of every emitted text delta. */
@@ -165,6 +170,32 @@ describe('translate', () => {
     expect(chunks.filter(chunk => chunk.type === 'block-end')).toEqual([
       { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'tool-1', name: 'a', arguments: '{}' } },
       { type: 'block-end', index: 1, block: { type: 'tool-call', id: 'tool-2', name: 'b', arguments: '{}' } },
+    ])
+  })
+
+  it('reports a translated wire tool name under the harness name that issued it', async () => {
+    const harnessName = 'mcp__context7__query-docs'
+    const wireName = wireToolName(harnessName)
+    const chunks = await run(join(
+      toolFrame({ name: wireName, toolUseId: 'tool-1', input: '{"query":"dsh"}' }),
+      toolFrame({ name: wireName, toolUseId: 'tool-1', stop: true }),
+    ), 4096, new Map([[wireName, harnessName]]))
+    expect(chunks.filter(chunk => chunk.type === 'block-end')).toEqual([
+      {
+        type: 'block-end',
+        index: 0,
+        block: { type: 'tool-call', id: 'tool-1', name: harnessName, arguments: '{"query":"dsh"}' },
+      },
+    ])
+  })
+
+  it('reports a tool name the request never offered unchanged', async () => {
+    const chunks = await run(join(
+      toolFrame({ name: 'not_offered', toolUseId: 'tool-1', input: '{}' }),
+      toolFrame({ name: 'not_offered', toolUseId: 'tool-1', stop: true }),
+    ), 4096, new Map())
+    expect(chunks.filter(chunk => chunk.type === 'block-end')).toEqual([
+      { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'tool-1', name: 'not_offered', arguments: '{}' } },
     ])
   })
 

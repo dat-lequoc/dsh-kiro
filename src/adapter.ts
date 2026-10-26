@@ -35,7 +35,7 @@ import { requestImageDimensions } from '@deepseek-ai/dsh-attachment'
 import type { AttachmentId, ImageAttachmentRef, ImageMediaType, ImageRequestTarget } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { decodeFrames } from './eventstream.ts'
-import { serializeRequest } from './serialize.ts'
+import { serializeRequest, toolNameIndex } from './serialize.ts'
 import type { WireImageBlock } from './types.ts'
 import type { RequestDefaults } from './serialize.ts'
 import { post } from './transport.ts'
@@ -643,9 +643,12 @@ export class KiroAdapter extends LlmAdapter {
 
     // The context capacity the percentage is a fraction of: the live catalog's
     // exact value when discovery supplied one, else the configured default.
+    // The reverse tool-name index is derived from the same declarations the
+    // request carried, so a translated name is reported under the harness name.
     yield* translate(
       decodeFrames(response.body, onActivity),
       contextCapacity(selected?.contextWindow ?? connection.defaultContextWindow, connection),
+      toolNameIndex(options.tools),
     )
   }
 }

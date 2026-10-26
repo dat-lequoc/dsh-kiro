@@ -14,6 +14,9 @@
  * - Tool results are per-turn context on the user message that carries them,
  *   and the service rejects a result whose `toolUseId` no history entry
  *   issued, so unmatched results degrade to text.
+ * - Tool schemas and replayed calls carry names the service accepts: a harness
+ *   name outside its `^[A-Za-z][A-Za-z0-9_]{0,63}$` grammar is translated onto
+ *   one, and the translator reports the call back under the harness name.
  * - History is capped by entry count, not tokens: past the cap the service
  *   answers `Input is too long.`, so the oldest entries fold into one text turn.
  *
@@ -314,20 +317,54 @@ function imagesOf(
   return images
 }
 
+/** Wire name characters that carry no meaning of their own. */
+const INVALID_TOOL_NAME_CHARS = /[^A-Za-z0-9_]/gu
+/** Hash characters a translated wire name appends to stay injective. */
+const TOOL_NAME_HASH_LENGTH = 8
+
 /**
- * Validate one tool name against the wire pattern.
+ * Map a harness tool name onto one Kiro accepts.
+ *
+ * The harness leaves tool names unconstrained and MCP servers commonly publish
+ * names the service rejects (`mcp__context7__query-docs`), while CodeWhisperer
+ * enforces `^[A-Za-z][A-Za-z0-9_]{0,63}$` on every tool it is offered. A name
+ * the service already accepts is sent verbatim, so the ordinary built-in tools
+ * keep the ids the model has always seen. Anything else is translated:
+ *
+ * - every character outside `[A-Za-z0-9_]` becomes `_`,
+ * - a leading non-letter is prefixed, because the pattern demands one,
+ * - a hash of the original name is appended, so two names that differ only in
+ *   translated characters (`a-b` and `a_b`) stay distinct and no mapping has to
+ *   be remembered between requests — the same name always lands on the same
+ *   wire name, which keeps replayed history and the provider's cached prefix
+ *   consistent, and the translator can rebuild the reverse map from the tools it
+ *   sent.
+ *
  * @param name - the harness tool name.
- * @returns the same name.
- * @throws `LlmError('UNSUPPORTED_TOOL_NAME')` when Kiro would reject it.
+ * @returns a name matching `TOOL_NAME_PATTERN`, unchanged when it already did.
  */
-function assertToolName(name: string): string {
-  if (!TOOL_NAME_PATTERN.test(name)) {
-    throw new LlmError(
-      `Kiro rejects tool name "${name}"; names must match ${String(TOOL_NAME_PATTERN)}`,
-      'UNSUPPORTED_TOOL_NAME',
-    )
-  }
-  return name
+export function wireToolName(name: string): string {
+  if (TOOL_NAME_PATTERN.test(name)) return name
+  const body = name.replace(INVALID_TOOL_NAME_CHARS, '_')
+  const lead = /^[A-Za-z]/u.test(body) ? body : `t${body}`
+  const digest = createHash('sha256').update(name).digest('hex').slice(0, TOOL_NAME_HASH_LENGTH)
+  const room = 64 - TOOL_NAME_HASH_LENGTH - 1
+  return `${lead.slice(0, room)}_${digest}`
+}
+
+/**
+ * Build the reverse map from each wire tool name back to its harness name.
+ *
+ * The translator needs it to report a model's tool call under the name the
+ * harness registered, and it is derived from the same tool list the request
+ * carried, so the round trip cannot drift from what the model was offered.
+ * @param tools - the request's tool declarations.
+ * @returns wire name to harness name; empty when the request carried no tools.
+ */
+export function toolNameIndex(
+  tools: readonly { name: string }[] | undefined,
+): ReadonlyMap<string, string> {
+  return new Map((tools ?? []).map(tool => [wireToolName(tool.name), tool.name]))
 }
 
 /** Serialize the tool-result blocks of one message. */
@@ -346,7 +383,7 @@ function toolUsesOf(message: AssistantMessage): WireToolUse[] {
     .filter(block => block.type === 'tool-call')
     .map(block => ({
       toolUseId: wireToolUseId(block.id),
-      name: assertToolName(block.name),
+      name: wireToolName(block.name),
       // Kiro takes parsed arguments; the harness carries the model's raw JSON
       // string. Unparsable arguments reach the model as text below.
       input: parseArguments(block.arguments),
@@ -592,7 +629,7 @@ export function serializeRequest(
 
   const tools: WireTool[] = (options.tools ?? []).map(tool => ({
     toolSpecification: {
-      name: assertToolName(tool.name),
+      name: wireToolName(tool.name),
       description: tool.description,
       inputSchema: { json: tool.parameters },
     },

@@ -214,10 +214,14 @@ describe('serializeRequest', () => {
     }])
   })
 
-  it('refuses a tool name the service rejects', () => {
-    expect(() => serialize([user('hi')], {
+  it('translates a tool name the service rejects onto an accepted one', () => {
+    // The regression contract lives in tests/tool-names.spec.ts; this keeps the
+    // serialization seam itself covered.
+    const request = serialize([user('hi')], {
       tools: [{ name: 'get-weather', description: 'd', parameters: {} }],
-    })).toThrowError(expect.objectContaining({ code: 'UNSUPPORTED_TOOL_NAME' }))
+    })
+    expect(currentOf(request).userInputMessageContext?.tools?.[0]?.toolSpecification.name)
+      .toMatch(/^[A-Za-z][A-Za-z0-9_]{0,63}$/)
   })
 
   it('pairs a tool result with the call its history issued', () => {

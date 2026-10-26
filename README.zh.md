@@ -310,7 +310,7 @@ KIRO_LIVE=1 KIRO_MODEL=claude-opus-5 KIRO_EFFORT=high npx vitest run tests/live-
 
 - 图片输入目前以 `UNSUPPORTED_CONTENT` 拒绝。
 - `temperature`、`topP` 与 stop 序列在 Kiro 的 `generateAssistantResponse` 请求中没有可用位置，会被忽略。
-- 工具名必须匹配 `^[A-Za-z][A-Za-z0-9_]{0,63}$`。
+- Kiro 的 `^[A-Za-z][A-Za-z0-9_]{0,63}$` 语法无法接受的工具名（MCP 服务器常发布 `mcp__context7__query-docs` 这类 kebab-case 名称）会在请求中转换为可接受的名称，并在调用返回时还原为 harness 名称；已符合语法的名称原样发送。
 - 不支持 SOCKS 代理。
 
 ## 致谢
