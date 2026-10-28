@@ -12,6 +12,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   contentHasImage,
   CONTEXT_WINDOW_EXCEEDED_CODE,
+  IMAGE_OFFLOAD_REQUIRED_CODE,
   isContextWindowExceededError,
   isQuotaExceededError,
   QUOTA_EXCEEDED_CODE,
@@ -31,7 +32,7 @@ import type {
   ResolvedRetryPolicy,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import { requestImageDimensions } from '@deepseek-ai/dsh-attachment'
+import { longEdgeDimensions, requestImageDimensions } from '@deepseek-ai/dsh-attachment'
 import type { AttachmentId, ImageAttachmentRef, ImageMediaType, ImageRequestTarget } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { decodeFrames } from './eventstream.ts'
@@ -262,9 +263,22 @@ export function kiroTokenTypeHeaders(token: KiroToken): Record<string, string> {
  * 8000x8000 is the documented per-image dimension ceiling, and 3.75 MB is the
  * encoded-byte ceiling. Both are applied before base64 expansion, which is what
  * the wire actually carries.
+ *
+ * A request carrying more than {@link IMAGE_MANY_THRESHOLD} images is validated
+ * differently: one side above {@link IMAGE_MAX_SIDE_MANY} is refused with
+ * "At least one of the image dimensions exceed max allowed size for many-image
+ * requests: 3000 pixels". A pixel product cannot express that bound — a
+ * 6000x216 screenshot is 1.3 MP and well inside `IMAGE_MAX_PIXELS` — so those
+ * requests are sized by long edge instead.
  */
 const IMAGE_MAX_PIXELS = 8000 * 8000
 const IMAGE_MAX_BYTES = 3_750_000
+/** Per-side ceiling Kiro applies once a request is validated as many-image. */
+const IMAGE_MAX_SIDE_MANY = 3000
+/** Image count at which Kiro switches to its many-image validation. */
+const IMAGE_MANY_THRESHOLD = 20
+/** Kiro's wording when one request image breaks its many-image size bound. */
+const MANY_IMAGE_REJECTION = /many-image|exceed max allowed size|image dimensions/iu
 
 /** Media types Kiro's `ImageFormat` enum accepts, mapped to its own spelling. */
 const IMAGE_FORMATS = new Map<ImageMediaType, WireImageBlock['format']>([
@@ -315,14 +329,16 @@ async function prepareImages(
       'UNSUPPORTED_CONTENT',
     )
   }
+  // A request Kiro validates as many-image is bounded per side, not per pixel
+  // product, so the long edge is what gets projected there.
+  const manyImages = refs.size > IMAGE_MANY_THRESHOLD
   for (const [id, ref] of refs) {
-    // The store takes exact target dimensions; the pixel ceiling is projected
-    // onto them here, as the bundled routes do.
-    const version = await store.readImageRequest(
-      ref,
-      { ...requestImageDimensions(ref.width, ref.height, IMAGE_MAX_PIXELS), maxBytes: IMAGE_MAX_BYTES },
-      signal,
-    )
+    // The store takes exact target dimensions; the budget is projected onto
+    // them here, as the bundled routes do.
+    const target = manyImages
+      ? longEdgeDimensions(ref.width, ref.height, IMAGE_MAX_SIDE_MANY)
+      : requestImageDimensions(ref.width, ref.height, IMAGE_MAX_PIXELS)
+    const version = await store.readImageRequest(ref, { ...target, maxBytes: IMAGE_MAX_BYTES }, signal)
     const format = IMAGE_FORMATS.get(version.mediaType)
     if (format === undefined) {
       throw new LlmError(
@@ -635,6 +651,21 @@ export class KiroAdapter extends LlmAdapter {
         // failure, so an HTML proxy error page must not mask it.
       }
       const id = response.headers['x-amzn-requestid']
+      // An image Kiro refused for its many-image size bound is a request the
+      // harness can repair by offloading older images, not a malformed one.
+      // Raising the dedicated code lets `dsh-compaction-image-offload` mark
+      // occurrences and retry the turn instead of failing it outright.
+      if (response.status === 400 && MANY_IMAGE_REJECTION.test(text)) {
+        const retained = options.messages.reduce(
+          (total, entry) => total + entry.content.filter((block) => block.type === 'image').length,
+          0,
+        )
+        throw new LlmError(message, IMAGE_OFFLOAD_REQUIRED_CODE, {
+          status: response.status,
+          offloadImages: Math.max(1, Math.min(retained, 2)),
+          ...typeof id === 'string' && id.length > 0 ? { requestId: ProviderRequestId(id) } : {},
+        })
+      }
       throw new LlmError(message, httpErrorCode(response.status, text), {
         status: response.status,
         ...typeof id === 'string' && id.length > 0 ? { requestId: ProviderRequestId(id) } : {},
