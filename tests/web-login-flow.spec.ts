@@ -128,6 +128,7 @@ beforeEach(async () => {
     managedDirectory: directory,
     options: () => resolveAdapterOptions({ region: 'us-east-1' }),
     discovery: { current: () => undefined, clear: () => undefined, list: async () => [] },
+    catalog: { peek: async () => undefined, snapshot: () => undefined, invalidate: () => undefined, refresh: async () => { throw new Error('no discovery in this test') } },
     modelSettings: new FileModelSettingsStore(),
     usage: { current: () => undefined, clear: () => undefined, get: async () => ({}) },
     resolveToken: async () => { throw new Error('not used by these routes') },

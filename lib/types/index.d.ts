@@ -32,6 +32,9 @@ export { assertMicrosoftTokenEndpoint, normalizeExternalIdpCredentials } from '.
 export { BUILDER_START_URL, credentialSummary, deleteDeviceCredentials, importApiKey, importExternalIdp, importRefreshToken, pollDeviceLogin, pollSocialDeviceLogin, resolveRefreshTokenOrigin, saveDeviceCredentials, saveManagedCredentials, startDeviceLogin, startSocialDeviceLogin, syncManagedCredentialFile, } from './login.ts';
 export type { DeviceCredentials, DeviceLoginOptions, SaveManagedCredentialOptions, DeviceLoginPoll, DeviceLoginSession, ManagedCredentials, RefreshTokenOrigin, SocialDeviceLoginPoll, SocialDeviceLoginSession, } from './login.ts';
 export { credentialDirectory } from './paths.ts';
+export { discoverModelsFromCli, discoverProfileArnFromFile, mergeCliCatalog } from './cli-discovery.ts';
+export { DEFAULT_CATALOG_TTL_MS, KiroModelCatalog, modelCatalogPath } from './model-catalog.ts';
+export type { KiroCatalogSnapshot, KiroModelCatalogOptions } from './model-catalog.ts';
 export { assertKiroProfileArn, profileRegion } from './profile.ts';
 export { assertKiroRegion } from './region.ts';
 export { getJson, parseProxyUrl, postForm, postJson, postJsonWithHeaders } from './transport.ts';

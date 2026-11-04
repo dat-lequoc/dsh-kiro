@@ -30,9 +30,11 @@ import {
 } from './adapter.ts'
 import type { AttachmentStore, KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import { kiroCredentialDirectory, resolveTokenFromDirectories } from './auth.ts'
+import { discoverModelsFromCli, discoverProfileArnFromFile, mergeCliCatalog } from './cli-discovery.ts'
 import { discoverKiroProfileArn, KiroModelDiscovery } from './discovery.ts'
 import { credentialDirectory } from './paths.ts'
 import { FileModelSettingsStore } from './model-settings.ts'
+import { KiroModelCatalog } from './model-catalog.ts'
 import { assertKiroProfileArn } from './profile.ts'
 import { assertKiroRegion } from './region.ts'
 import { parseProxyUrl, postForm, postJson } from './transport.ts'
@@ -118,6 +120,9 @@ export type {
   SocialDeviceLoginSession,
 } from './login.ts'
 export { credentialDirectory } from './paths.ts'
+export { discoverModelsFromCli, discoverProfileArnFromFile, mergeCliCatalog } from './cli-discovery.ts'
+export { DEFAULT_CATALOG_TTL_MS, KiroModelCatalog, modelCatalogPath } from './model-catalog.ts'
+export type { KiroCatalogSnapshot, KiroModelCatalogOptions } from './model-catalog.ts'
 export { assertKiroProfileArn, profileRegion } from './profile.ts'
 export { assertKiroRegion } from './region.ts'
 export { getJson, parseProxyUrl, postForm, postJson, postJsonWithHeaders } from './transport.ts'
@@ -441,32 +446,67 @@ export function apply(ctx: Context, config: Config): void {
       fetchJson: (url, body) => postJson(url, body, connection.proxyUrl, signal),
       fetchForm: (url, body) => postForm(url, body, connection.proxyUrl, signal),
       ...connection.profileArn === undefined
-        ? { resolveProfileArn: (accessToken, region, authMethod) => discoverKiroProfileArn(
-          connection,
-          { accessToken, region, authMethod, expiresAt: Date.now() + 60_000 },
-          signal,
-        ) }
+        ? {
+          resolveProfileArn: async (accessToken, region, authMethod) => {
+            // Try the local file first (zero network cost), then the API.
+            const fileArn = await discoverProfileArnFromFile()
+            if (fileArn !== undefined) return fileArn
+            return discoverKiroProfileArn(
+              connection,
+              { accessToken, region, authMethod, expiresAt: Date.now() + 60_000 },
+              signal,
+            )
+          },
+        }
         : {},
       writableDirectories: [managedDirectory],
     })
   const discovery = new KiroModelDiscovery({ resolveToken: tokenResolver })
   const modelSettings = new FileModelSettingsStore()
   const usage = new KiroUsageService({ resolveToken: tokenResolver })
+  const catalog = new KiroModelCatalog({
+    // Both sources run in parallel. The API is authoritative because only it
+    // advertises each model's effort levels (xhigh, max, ...); kiro-cli owns
+    // its own auth and routing, so it fills in when this process cannot reach
+    // the API, and contributes any model the API page did not list.
+    fetch: async (connection, signal) => {
+      const [api, cli] = await Promise.allSettled([
+        discovery.list(connection, signal, true),
+        discoverModelsFromCli(signal),
+      ])
+      const cliModels = cli.status === 'fulfilled' ? cli.value : undefined
+      if (api.status === 'fulfilled') return mergeCliCatalog(api.value, cliModels)
+      ctx.logger.warn('dsh-kiro: ListAvailableModels failed; using kiro-cli models without effort levels')
+      ctx.logger.warn(api.reason)
+      if (cliModels !== undefined && cliModels.length > 0) return cliModels
+      throw api.reason
+    },
+    onUpdate: async (snapshot) => {
+      ctx.logger.info(`dsh-kiro: model catalog refreshed (${snapshot.models.length} models)`)
+      await modelSettings.mergeCatalog(snapshot.models)
+      // Selectors re-read listModels, so a background refresh reaches them
+      // without the user reopening anything.
+      ctx.emit('llm/adapters-updated')
+    },
+    onBackgroundError: (error) => {
+      ctx.logger.warn('dsh-kiro: background model refresh failed; keeping the stored catalog')
+      ctx.logger.warn(error)
+    },
+  })
+  void catalog.load()
   const adapter = new KiroAdapter({
     options,
     resolveToken: tokenResolver,
     discoverModels: async (connection, signal) => {
       try {
-        const models = await discovery.list(connection, signal)
-        await modelSettings.mergeCatalog(models)
-        return models
+        return (await catalog.get(connection, signal)).models
       } catch (error: unknown) {
-        ctx.logger.warn('dsh-kiro: live model discovery failed; using the configured catalog')
+        ctx.logger.warn('dsh-kiro: model discovery failed; using the configured catalog')
         ctx.logger.warn(error)
         return connection.models
       }
     },
-    currentModels: connection => discovery.current(connection),
+    currentModels: () => catalog.snapshot()?.models,
     selectModels: models => modelSettings.enabledModels(models),
     // Read lazily: image bytes live in the attachment service, and a profile
     // that mounts none should simply have no images rather than fail to load.
@@ -500,6 +540,7 @@ export function apply(ctx: Context, config: Config): void {
     managedDirectory,
     options,
     discovery,
+    catalog,
     modelSettings,
     usage,
     resolveToken: tokenResolver,

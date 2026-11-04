@@ -12,6 +12,7 @@ import { kiroCredentialDirectory } from './auth.ts'
 import type { KiroToken } from './auth.ts'
 import { discoverKiroProfileArn } from './discovery.ts'
 import type { KiroModelDiscovery } from './discovery.ts'
+import type { KiroCatalogSnapshot, KiroModelCatalog } from './model-catalog.ts'
 import { modelSelection } from './model-settings.ts'
 import type { FileModelSettingsStore } from './model-settings.ts'
 import {
@@ -36,6 +37,8 @@ export interface WebDependencies {
   managedDirectory: string
   options: () => KiroConnectionOptions
   discovery: KiroModelDiscovery
+  /** Persistent catalog every model read goes through. */
+  catalog: KiroModelCatalog
   modelSettings: FileModelSettingsStore
   usage: KiroUsageService
   resolveToken: (connection: KiroConnectionOptions, signal: AbortSignal) => Promise<KiroToken>
@@ -221,16 +224,21 @@ function publicLogin(flow: LoginFlow | undefined): Record<string, unknown> {
   }
 }
 
+/**
+ * Project the stored catalog for the page; with none stored yet, the
+ * configured catalog is shown and labelled as such.
+ */
 async function modelPayload(
-  models: readonly KiroCatalogModel[],
-  source: 'live' | 'configured',
+  snapshot: KiroCatalogSnapshot | undefined,
+  connection: KiroConnectionOptions,
   store: FileModelSettingsStore,
-  maxContextWindow?: number,
 ): Promise<unknown> {
+  const models = snapshot?.models ?? connection.models
+  const maxContextWindow = connection.maxContextWindow
   const selection = await modelSelection(store, models)
   return {
-    source,
-    fetchedAt: Date.now(),
+    source: snapshot === undefined ? 'configured' : 'live',
+    fetchedAt: snapshot?.fetchedAt ?? Date.now(),
     enabledModelIds: selection.enabledModelIds,
     models: selection.models.map(model => ({
       id: model.id,
@@ -273,7 +281,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       ? { authenticated: false as const, authMethod: undefined, region: undefined, expiresAt: undefined, profileArn: undefined }
       : await credentialSummary(kiroCredentialDirectory())
     const connection = dependencies.options()
-    const cached = dependencies.discovery.current(connection)
+    const catalog = await dependencies.catalog.peek(connection)
     const accounts = await accountStore().snapshot()
     return {
       authenticated: managed.authenticated || external.authenticated,
@@ -286,12 +294,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       activeAccountId: accounts.activeAccountId,
       contextWindowCap: connection.maxContextWindow,
       login: publicLogin(login),
-      models: await modelPayload(
-        cached ?? connection.models,
-        cached === undefined ? 'configured' : 'live',
-        dependencies.modelSettings,
-        connection.maxContextWindow,
-      ),
+      models: await modelPayload(catalog, connection, dependencies.modelSettings),
       usage: dependencies.usage.current(connection),
     }
   }
@@ -328,6 +331,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     }
     const saved = await saveManagedCredentials(dependencies.managedDirectory, complete, target)
     dependencies.discovery.clear()
+    dependencies.catalog.invalidate()
     dependencies.usage.clear()
     emitUpdated()
     return saved
@@ -553,6 +557,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               login = undefined
               await deleteDeviceCredentials(dependencies.managedDirectory)
               dependencies.discovery.clear()
+              dependencies.catalog.invalidate()
               dependencies.usage.clear()
               emitUpdated()
               sendJson(response, 200, { ok: true, value: await status() })
@@ -581,6 +586,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
                 return next
               })
               dependencies.discovery.clear()
+              dependencies.catalog.invalidate()
               dependencies.usage.clear()
               emitUpdated()
               sendJson(response, 200, { ok: true, value: await status() })
@@ -597,6 +603,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               await accountStore().activate(accountId, revision)
               await syncManagedCredentialFile(dependencies.managedDirectory)
               dependencies.discovery.clear()
+              dependencies.catalog.invalidate()
               dependencies.usage.clear()
               emitUpdated()
               sendJson(response, 200, { ok: true, value: await status() })
@@ -614,6 +621,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               await dropRegistration(dependencies.managedDirectory, removed.credential)
               await syncManagedCredentialFile(dependencies.managedDirectory)
               dependencies.discovery.clear()
+              dependencies.catalog.invalidate()
               dependencies.usage.clear()
               emitUpdated()
               sendJson(response, 200, { ok: true, value: await status() })
@@ -621,15 +629,10 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
             }
             if (path === 'models' && request.method === 'GET') {
               const connection = dependencies.options()
-              const cached = dependencies.discovery.current(connection)
+              const catalog = await dependencies.catalog.peek(connection)
               sendJson(response, 200, {
                 ok: true,
-                value: await modelPayload(
-                  cached ?? connection.models,
-                  cached === undefined ? 'configured' : 'live',
-                  dependencies.modelSettings,
-                  connection.maxContextWindow,
-                ),
+                value: await modelPayload(catalog, connection, dependencies.modelSettings),
               })
               return
             }
@@ -641,29 +644,30 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
                 return
               }
               const connection = dependencies.options()
-              const cached = dependencies.discovery.current(connection)
-              const models = cached ?? connection.models
-              await dependencies.modelSettings.setEnabledModelIds(body.enabledModelIds, models)
+              // The selection is constrained to the catalog the page was
+              // showing; reading the stored one keeps a checkbox click from
+              // shrinking the known ids down to the configured fallback.
+              const catalog = await dependencies.catalog.peek(connection)
+              await dependencies.modelSettings.setEnabledModelIds(
+                body.enabledModelIds,
+                catalog?.models ?? connection.models,
+              )
               emitUpdated()
               sendJson(response, 200, {
                 ok: true,
-                value: await modelPayload(
-                  models,
-                  cached === undefined ? 'configured' : 'live',
-                  dependencies.modelSettings,
-                  connection.maxContextWindow,
-                ),
+                value: await modelPayload(catalog, connection, dependencies.modelSettings),
               })
               return
             }
             if (path === 'models/refresh' && request.method === 'POST') {
               const connection = dependencies.options()
-              const models = await dependencies.discovery.list(connection, AbortSignal.timeout(15_000), true)
-              await dependencies.modelSettings.mergeCatalog(models)
-              emitUpdated()
+              // A failed refresh surfaces as an error and leaves the stored
+              // catalog untouched; merging and the update event happen in
+              // the catalog's onUpdate hook.
+              const catalog = await dependencies.catalog.refresh(connection)
               sendJson(response, 200, {
                 ok: true,
-                value: await modelPayload(models, 'live', dependencies.modelSettings, connection.maxContextWindow),
+                value: await modelPayload(catalog, connection, dependencies.modelSettings),
               })
               return
             }
