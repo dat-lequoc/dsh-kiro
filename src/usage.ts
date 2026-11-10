@@ -3,10 +3,10 @@
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { KiroConnectionOptions } from './adapter.ts'
 import type { KiroAuthMethod, KiroToken } from './auth.ts'
+import { KIRO_USER_AGENT } from './client-id.ts'
 import { getJson, postJsonWithHeaders } from './transport.ts'
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000
-const KIRO_USER_AGENT = 'aws-sdk-js/3.738.0 KiroIDE'
 /**
  * Limit value Kiro publishes for a plan with no usable bound. The installed
  * client treats a limit at or above it as "no limit" rather than a quota, so

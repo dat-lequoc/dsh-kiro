@@ -13,6 +13,7 @@
 import { describe, expect, it } from 'vitest'
 import { conversationIdFor, kiroRequestEndpoint, kiroTokenTypeHeaders } from '../src/adapter.ts'
 import { kiroCredentialDirectory, resolveTokenFromDirectories } from '../src/auth.ts'
+import { KIRO_USER_AGENT } from '../src/client-id.ts'
 import { discoverKiroProfileArn, KiroModelDiscovery } from '../src/discovery.ts'
 import { decodeFrames } from '../src/eventstream.ts'
 import { resolveAdapterOptions } from '../src/index.ts'
@@ -115,8 +116,8 @@ describe.runIf(process.env.KIRO_LIVE === '1')('live Kiro image request', () => {
         authorization: `Bearer ${token.accessToken}`,
         ...kiroTokenTypeHeaders(token),
         'x-amzn-kiro-agent-mode': 'vibe',
-        'user-agent': 'aws-sdk-js/3.738.0 KiroIDE',
-        'x-amz-user-agent': 'aws-sdk-js/3.738.0 KiroIDE',
+        'user-agent': KIRO_USER_AGENT,
+        'x-amz-user-agent': KIRO_USER_AGENT,
       },
       body: JSON.stringify(body),
       signal,
