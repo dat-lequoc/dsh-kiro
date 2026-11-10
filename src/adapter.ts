@@ -41,7 +41,7 @@ import type { RequestDefaults } from './serialize.ts'
 import { post } from './transport.ts'
 import { translate } from './translate.ts'
 import type { KiroToken } from './auth.ts'
-import { KIRO_USER_AGENT } from './client-id.ts'
+import { kiroUserAgent } from './client-id.ts'
 import { profileRegion } from './profile.ts'
 
 /** Default maximum idle interval while an outstanding provider read is pending. */
@@ -613,8 +613,8 @@ export class KiroAdapter extends LlmAdapter {
         // support this application", so this header is a protocol constant
         // rather than attribution. Harness attribution therefore travels in
         // `x-amz-user-agent`, which the service passes through.
-        'user-agent': KIRO_USER_AGENT,
-        'x-amz-user-agent': `${KIRO_USER_AGENT} ${userAgent()}`,
+        'user-agent': kiroUserAgent(),
+        'x-amz-user-agent': `${kiroUserAgent()} ${userAgent()}`,
       },
       body,
       signal,

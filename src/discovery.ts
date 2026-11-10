@@ -4,7 +4,7 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { ModelModality } from '@deepseek-ai/dsh-llm'
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import type { KiroAuthMethod, KiroToken } from './auth.ts'
-import { KIRO_USER_AGENT } from './client-id.ts'
+import { kiroUserAgent } from './client-id.ts'
 import { assertKiroProfileArn } from './profile.ts'
 import { getJson, postJsonWithHeaders } from './transport.ts'
 
@@ -97,8 +97,8 @@ function tokenTypeHeaders(authMethod: KiroAuthMethod): Record<string, string> {
 function authHeaders(token: KiroToken): Record<string, string> {
   return {
     authorization: `Bearer ${token.accessToken}`,
-    'user-agent': KIRO_USER_AGENT,
-    'x-amz-user-agent': KIRO_USER_AGENT,
+    'user-agent': kiroUserAgent(),
+    'x-amz-user-agent': kiroUserAgent(),
     'x-amzn-codewhisperer-optout': 'true',
     ...tokenTypeHeaders(token.authMethod),
   }

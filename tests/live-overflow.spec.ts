@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest'
 import { conversationIdFor, httpErrorCode, kiroRequestEndpoint, kiroTokenTypeHeaders } from '../src/adapter.ts'
 import { kiroCredentialDirectory, resolveTokenFromDirectories } from '../src/auth.ts'
-import { KIRO_USER_AGENT } from '../src/client-id.ts'
+import { kiroUserAgent } from '../src/client-id.ts'
 import { discoverKiroProfileArn } from '../src/discovery.ts'
 import { resolveAdapterOptions } from '../src/index.ts'
 import { credentialDirectory } from '../src/paths.ts'
@@ -56,8 +56,8 @@ describe.runIf(process.env.KIRO_LIVE === '1')('live Kiro overflow classification
         authorization: `Bearer ${token.accessToken}`,
         ...kiroTokenTypeHeaders(token),
         'x-amzn-kiro-agent-mode': 'vibe',
-        'user-agent': KIRO_USER_AGENT,
-        'x-amz-user-agent': KIRO_USER_AGENT,
+        'user-agent': kiroUserAgent(),
+        'x-amz-user-agent': kiroUserAgent(),
       },
       body: serialized,
       signal,

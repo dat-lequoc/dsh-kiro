@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { kiroCredentialDirectory, resolveTokenFromDirectories } from '../src/auth.ts'
-import { KIRO_USER_AGENT } from '../src/client-id.ts'
+import { kiroUserAgent } from '../src/client-id.ts'
 import { discoverKiroProfileArn } from '../src/discovery.ts'
 import { resolveAdapterOptions } from '../src/index.ts'
 import { credentialDirectory } from '../src/paths.ts'
@@ -35,8 +35,8 @@ describe.runIf(process.env.KIRO_LIVE === '1')('live Kiro model request schema', 
     if (token.profileArn !== undefined) url.searchParams.set('profileArn', token.profileArn)
     const response = await getJson(url.toString(), {
       authorization: `Bearer ${token.accessToken}`,
-      'user-agent': KIRO_USER_AGENT,
-      'x-amz-user-agent': KIRO_USER_AGENT,
+      'user-agent': kiroUserAgent(),
+      'x-amz-user-agent': kiroUserAgent(),
       'x-amzn-codewhisperer-optout': 'true',
     }, connection.proxyUrl, signal)
     expect(response.status).toBe(200)
@@ -61,8 +61,8 @@ describe.runIf(process.env.KIRO_LIVE === '1')('live Kiro model request schema', 
       url.searchParams.set('nextToken', pageToken)
       const next = await getJson(url.toString(), {
         authorization: `Bearer ${token.accessToken}`,
-        'user-agent': KIRO_USER_AGENT,
-        'x-amz-user-agent': KIRO_USER_AGENT,
+        'user-agent': kiroUserAgent(),
+        'x-amz-user-agent': kiroUserAgent(),
         'x-amzn-codewhisperer-optout': 'true',
       }, connection.proxyUrl, signal)
       const parsed = next.body as { models?: { modelId?: string }[]; nextToken?: string }

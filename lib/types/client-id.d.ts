@@ -1,7 +1,8 @@
 /**
- * Client identifier sent to Kiro. The service enforces a minimum client
- * version, so bump this to the current Kiro IDE release if requests are
- * rejected with "This version of Kiro is no longer supported".
+ * Kiro enforces a minimum client version. The plugin follows the update feed
+ * and falls back to this pin. Bump the pin if requests fail with "no longer supported".
  */
+import { getJson } from './transport.ts';
 export declare const KIRO_CLIENT_VERSION = "1.4.121";
-export declare const KIRO_USER_AGENT = "aws-sdk-js/3.738.0 KiroIDE-1.4.121";
+export declare function kiroUserAgent(): string;
+export declare function refreshKiroClientVersion(proxyUrl: string | undefined, request?: typeof getJson): Promise<void>;
