@@ -31,6 +31,7 @@ import {
 import type { AttachmentStore, KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import { kiroCredentialDirectory, resolveTokenFromDirectories } from './auth.ts'
 import { discoverKiroProfileArn, KiroModelDiscovery } from './discovery.ts'
+import { refreshKiroClientVersion } from './client-id.ts'
 import { credentialDirectory } from './paths.ts'
 import { FileModelSettingsStore } from './model-settings.ts'
 import { assertKiroProfileArn } from './profile.ts'
@@ -430,6 +431,7 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
   options()
+  void refreshKiroClientVersion(options().proxyUrl)
 
   const managedDirectory = credentialDirectory()
   const tokenResolver = (connection: KiroConnectionOptions, signal: AbortSignal) =>

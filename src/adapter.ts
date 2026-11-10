@@ -41,6 +41,7 @@ import type { RequestDefaults } from './serialize.ts'
 import { post } from './transport.ts'
 import { translate } from './translate.ts'
 import type { KiroToken } from './auth.ts'
+import { kiroUserAgent } from './client-id.ts'
 import { profileRegion } from './profile.ts'
 
 /** Default maximum idle interval while an outstanding provider read is pending. */
@@ -49,8 +50,6 @@ export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 export const DEFAULT_CONTEXT_WINDOW = 200_000
 /** Timeout code distinguishing watchdog expiry from caller cancellation. */
 const STREAM_IDLE_TIMEOUT_CODE = 'LLM_STREAM_IDLE_TIMEOUT'
-/** User agent Kiro's own IDE sends; the service gates model access on it. */
-const KIRO_USER_AGENT = 'aws-sdk-js/3.738.0 KiroIDE'
 const CODEWHISPERER_TARGET = 'AmazonCodeWhispererStreamingService.GenerateAssistantResponse'
 
 const OFF = ReasoningEffortId('off')
@@ -614,8 +613,8 @@ export class KiroAdapter extends LlmAdapter {
         // support this application", so this header is a protocol constant
         // rather than attribution. Harness attribution therefore travels in
         // `x-amz-user-agent`, which the service passes through.
-        'user-agent': KIRO_USER_AGENT,
-        'x-amz-user-agent': `${KIRO_USER_AGENT} ${userAgent()}`,
+        'user-agent': kiroUserAgent(),
+        'x-amz-user-agent': `${kiroUserAgent()} ${userAgent()}`,
       },
       body,
       signal,

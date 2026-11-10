@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { clearTokenCache, kiroAuthMethod } from './auth.ts'
 import { KiroAccountStore } from './accounts.ts'
 import type { KiroAuthMethod } from './auth.ts'
+import { kiroUserAgent } from './client-id.ts'
 import { normalizeExternalIdpCredentials } from './external-idp.ts'
 import { assertKiroProfileArn } from './profile.ts'
 import { assertKiroRegion } from './region.ts'
@@ -488,8 +489,8 @@ export async function importApiKey(
   const response = await requestGet(url.toString(), {
     authorization: `Bearer ${accessToken}`,
     TokenType: 'API_KEY',
-    'user-agent': 'aws-sdk-js/3.738.0 KiroIDE',
-    'x-amz-user-agent': 'aws-sdk-js/3.738.0 KiroIDE',
+    'user-agent': kiroUserAgent(),
+    'x-amz-user-agent': kiroUserAgent(),
   }, signal)
   const models = record(response.body)?.models
   if (response.status !== 200 || !Array.isArray(models) || models.length === 0) {
