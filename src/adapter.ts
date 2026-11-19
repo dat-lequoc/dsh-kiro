@@ -38,6 +38,7 @@ import { decodeFrames } from './eventstream.ts'
 import { serializeRequest } from './serialize.ts'
 import type { WireImageBlock } from './types.ts'
 import type { RequestDefaults } from './serialize.ts'
+import { createToolNames } from './tool-names.ts'
 import { post } from './transport.ts'
 import { translate } from './translate.ts'
 import type { KiroToken } from './auth.ts'
@@ -589,6 +590,7 @@ export class KiroAdapter extends LlmAdapter {
     const images = requestHasImages
       ? await prepareImages(options, this.config.resolveAttachments?.(), signal)
       : undefined
+    const toolNames = createToolNames(options)
     const body = JSON.stringify(serializeRequest(
       options,
       connection.defaults,
@@ -598,7 +600,7 @@ export class KiroAdapter extends LlmAdapter {
       selected?.maxTokensBounds === undefined
         ? undefined
         : { maxTokensBounds: selected.maxTokensBounds },
-      images,
+      { images, toolNames },
     ))
     const response = await post({
       url,
@@ -646,6 +648,7 @@ export class KiroAdapter extends LlmAdapter {
     yield* translate(
       decodeFrames(response.body, onActivity),
       contextCapacity(selected?.contextWindow ?? connection.defaultContextWindow, connection),
+      toolNames.fromWire,
     )
   }
 }

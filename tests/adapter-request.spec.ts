@@ -6,8 +6,8 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, Message, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { TransportRequest, TransportResponse } from '../src/transport.ts'
 import type { WireRequest } from '../src/types.ts'
 
@@ -22,7 +22,7 @@ vi.mock('../src/transport.ts', () => ({
 }))
 
 const { conversationIdFor, KiroAdapter } = await import('../src/adapter.ts')
-const { frame, join, metadataFrame, textFrame } = await import('./frames.ts')
+const { frame, join, metadataFrame, textFrame, toolFrame } = await import('./frames.ts')
 type KiroConnectionOptions = import('../src/adapter.ts').KiroConnectionOptions
 
 const SOURCE = { kind: 'plugin' as const, plugin: 'test' }
@@ -130,6 +130,50 @@ describe('Kiro request identity and generation options', () => {
     expect(first.conversationState.conversationId).toMatch(UUID)
     expect(second.conversationState.conversationId)
       .toBe(first.conversationState.conversationId)
+  })
+
+  it('round-trips an MCP tool alias through streaming and the next turn', async () => {
+    const instance = adapter()
+    const name = 'mcp__context7__query-docs'
+    const tools = [{ name, description: 'Query docs', parameters: { type: 'object' } }]
+    const first = user('Look up the docs')
+    let alias: string | undefined
+    respond = () => {
+      const request = JSON.parse(posted.at(-1)?.body ?? '{}') as WireRequest
+      alias = request.conversationState.currentMessage.userInputMessage.userInputMessageContext?.tools?.[0]?.toolSpecification.name
+      return okResponse(
+        toolFrame({ toolUseId: 'call-1', name: alias, input: '{"query":' }),
+        toolFrame({ toolUseId: 'call-1', input: '"test"}', stop: true }),
+      )
+    }
+    const chunks: StreamChunk[] = []
+    for await (const chunk of instance.stream({
+      provider: 'kiro', model: 'claude-opus-5', messages: [first], tools,
+    } as GenerateOptions)) chunks.push(chunk)
+    expect(alias).toMatch(/^[A-Za-z][A-Za-z0-9_]{0,63}$/)
+    expect(alias).not.toBe(name)
+    expect(chunks.filter(chunk => chunk.type === 'tool-call-delta')).toMatchObject([
+      { name, argumentsDelta: '{"query":' }, { name, argumentsDelta: '"test"}' },
+    ])
+    const ended = chunks.find(chunk => chunk.type === 'block-end' && chunk.block.type === 'tool-call')
+    if (ended?.type !== 'block-end' || ended.block.type !== 'tool-call') throw new Error('no tool call emitted')
+    expect(ended.block).toMatchObject({ name, arguments: '{"query":"test"}' })
+
+    respond = () => okResponse(textFrame('done'))
+    const replay = await turn(instance, {
+      tools,
+      messages: [first,
+        createAssistantMessage({ content: [ended.block], source: { provider: 'kiro', model: 'claude-opus-5' } }),
+        createToolResultMessage({ callId: ended.block.id, content: [{ type: 'text', text: 'Docs' }], isError: false }),
+      ],
+    })
+    expect(replay.conversationState.history?.at(-1)).toMatchObject({
+      assistantResponseMessage: { toolUses: [{ toolUseId: 'call-1', name: alias, input: { query: 'test' } }] },
+    })
+    expect(replay.conversationState.currentMessage.userInputMessage.userInputMessageContext).toMatchObject({
+      tools: [{ toolSpecification: { name: alias } }],
+      toolResults: [{ toolUseId: 'call-1', content: [{ text: 'Docs' }] }],
+    })
   })
 
   it('separates conversations across DSH sessions', async () => {

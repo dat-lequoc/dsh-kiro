@@ -23,6 +23,7 @@
 import { createHash } from 'node:crypto'
 import { contentHasImage, LlmError } from '@deepseek-ai/dsh-llm'
 import type { AssistantMessage, ContentBlock, GenerateOptions, RequestMessage, ToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { createToolNames, type ToolNames } from './tool-names.ts'
 import type {
   WireHistoryEntry,
   WireImageBlock,
@@ -67,8 +68,6 @@ export const MAX_HISTORY_ENTRIES = 198
  * every turn. Each fold keeps the latest ~50 entries as structured turns.
  */
 const FOLD_BLOCK = 150
-/** Tool names CodeWhisperer accepts verbatim. */
-const TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
 /**
  * Tool-use ids CodeWhisperer accepts verbatim (verified live). Anything else,
  * such as another provider's `call_…|fc_…` ids replayed after a model switch,
@@ -314,22 +313,6 @@ function imagesOf(
   return images
 }
 
-/**
- * Validate one tool name against the wire pattern.
- * @param name - the harness tool name.
- * @returns the same name.
- * @throws `LlmError('UNSUPPORTED_TOOL_NAME')` when Kiro would reject it.
- */
-function assertToolName(name: string): string {
-  if (!TOOL_NAME_PATTERN.test(name)) {
-    throw new LlmError(
-      `Kiro rejects tool name "${name}"; names must match ${String(TOOL_NAME_PATTERN)}`,
-      'UNSUPPORTED_TOOL_NAME',
-    )
-  }
-  return name
-}
-
 /** Serialize the tool-result blocks of one message. */
 function toolResultsOf(message: ToolResultMessage): WireToolResult[] {
   return [{
@@ -341,12 +324,12 @@ function toolResultsOf(message: ToolResultMessage): WireToolResult[] {
 }
 
 /** Serialize the tool-call blocks of one assistant message. */
-function toolUsesOf(message: AssistantMessage): WireToolUse[] {
+function toolUsesOf(message: AssistantMessage, toolNames: ToolNames): WireToolUse[] {
   return message.content
     .filter(block => block.type === 'tool-call')
     .map(block => ({
       toolUseId: wireToolUseId(block.id),
-      name: assertToolName(block.name),
+      name: toolNames.toWire(block.name),
       // Kiro takes parsed arguments; the harness carries the model's raw JSON
       // string. Unparsable arguments reach the model as text below.
       input: parseArguments(block.arguments),
@@ -386,6 +369,7 @@ interface UserTurn {
 function foldTurns(
   messages: readonly RequestMessage[],
   images: PreparedImages,
+  toolNames: ToolNames,
 ): (
   | { role: 'user'; turn: UserTurn }
   | { role: 'assistant'; text: string; toolUses: WireToolUse[] }
@@ -397,7 +381,7 @@ function foldTurns(
       // The wire's assistant message has no image seat, so an assistant image
       // cannot be replayed; refusing beats dropping it from history silently.
       assertNoImages(message.content, 'assistant')
-      const toolUses = toolUsesOf(message)
+      const toolUses = toolUsesOf(message, toolNames)
       const last = turns.at(-1)
       if (last?.role === 'assistant') {
         last.text = [last.text, text].filter(part => part.length > 0).join('\n\n')
@@ -511,10 +495,10 @@ function foldOverflow(history: WireHistoryEntry[], model: string): void {
  * @param profileArn - CodeWhisperer profile the account bills against.
  * @param nativeEffort - live effort levels and their provider request path.
  * @param limits - live per-model generation bounds, when discovery supplied them.
- * @param images - wire images already read for this request, by attachment id.
+ * @param prepared - wire images and tool-name mapping prepared for this request.
  * @returns the request body.
- * @throws `LlmError` when an image cannot be placed, a tool name is unusable,
- *   an effort is unsupported, a generation option is unusable, or there are no
+ * @throws `LlmError` when an image cannot be placed, an effort is unsupported,
+ *   a generation option is unusable, or there are no
  *   messages at all.
  */
 export function serializeRequest(
@@ -524,13 +508,16 @@ export function serializeRequest(
   profileArn?: string,
   nativeEffort?: NativeEffortConfig,
   limits?: ModelLimits,
-  images: PreparedImages = new Map(),
+  { images = new Map(), toolNames = createToolNames(options) }: {
+    images?: PreparedImages | undefined
+    toolNames?: ToolNames
+  } = {},
 ): WireRequest {
   if (options.messages.length === 0) {
     throw new LlmError('Kiro requires at least one message', 'INVALID_REQUEST')
   }
   const effort = resolveEffort(options, defaults, nativeEffort)
-  const turns = foldTurns(options.messages, images)
+  const turns = foldTurns(options.messages, images, toolNames)
   if (turns.at(-1)?.role === 'assistant') {
     turns.push({ role: 'user', turn: { text: CONTINUE_PADDING, toolResults: [], images: [] } })
   }
@@ -592,7 +579,7 @@ export function serializeRequest(
 
   const tools: WireTool[] = (options.tools ?? []).map(tool => ({
     toolSpecification: {
-      name: assertToolName(tool.name),
+      name: toolNames.toWire(tool.name),
       description: tool.description,
       inputSchema: { json: tool.parameters },
     },

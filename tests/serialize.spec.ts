@@ -50,7 +50,7 @@ function serialize(
     'arn:aws:codewhisperer:us-east-1:1:profile/X',
     undefined,
     undefined,
-    images,
+    { images },
   )
 }
 
@@ -214,10 +214,21 @@ describe('serializeRequest', () => {
     }])
   })
 
-  it('refuses a tool name the service rejects', () => {
-    expect(() => serialize([user('hi')], {
-      tools: [{ name: 'get-weather', description: 'd', parameters: {} }],
-    })).toThrowError(expect.objectContaining({ code: 'UNSUPPORTED_TOOL_NAME' }))
+  it('uses the same wire name for MCP declarations and history-only calls', () => {
+    const name = 'mcp__context7__query-docs'
+    const declared = serialize([user('hi')], {
+      tools: [{ name, description: 'Query docs', parameters: {} }],
+    })
+    const alias = currentOf(declared).userInputMessageContext?.tools?.[0]?.toolSpecification.name
+    expect(alias).toMatch(/^[A-Za-z][A-Za-z0-9_]{0,63}$/)
+    expect(alias).not.toBe(name)
+    const replay = serialize([
+      user('hi'), assistant('', [{ id: 'call-1', name, args: '{}' }]), toolResult('call-1', 'docs'),
+    ])
+    expect(history(replay).at(-1)).toMatchObject({
+      assistantResponseMessage: { toolUses: [{ toolUseId: 'call-1', name: alias }] },
+    })
+    expect(currentOf(replay).userInputMessageContext?.toolResults?.[0]?.toolUseId).toBe('call-1')
   })
 
   it('pairs a tool result with the call its history issued', () => {

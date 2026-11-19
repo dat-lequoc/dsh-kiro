@@ -20,6 +20,7 @@
  * @module dsh-kiro/serialize
  */
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
+import { type ToolNames } from './tool-names.ts';
 import type { WireImageBlock, WireRequest } from './types.ts';
 /**
  * Neutral user text standing in for an absent turn. Matches the installed Kiro
@@ -114,10 +115,13 @@ export type PreparedImages = ReadonlyMap<string, WireImageBlock>;
  * @param profileArn - CodeWhisperer profile the account bills against.
  * @param nativeEffort - live effort levels and their provider request path.
  * @param limits - live per-model generation bounds, when discovery supplied them.
- * @param images - wire images already read for this request, by attachment id.
+ * @param prepared - wire images and tool-name mapping prepared for this request.
  * @returns the request body.
- * @throws `LlmError` when an image cannot be placed, a tool name is unusable,
- *   an effort is unsupported, a generation option is unusable, or there are no
+ * @throws `LlmError` when an image cannot be placed, an effort is unsupported,
+ *   a generation option is unusable, or there are no
  *   messages at all.
  */
-export declare function serializeRequest(options: GenerateOptions, defaults: RequestDefaults, conversationId: string, profileArn?: string, nativeEffort?: NativeEffortConfig, limits?: ModelLimits, images?: PreparedImages): WireRequest;
+export declare function serializeRequest(options: GenerateOptions, defaults: RequestDefaults, conversationId: string, profileArn?: string, nativeEffort?: NativeEffortConfig, limits?: ModelLimits, { images, toolNames }?: {
+    images?: PreparedImages | undefined;
+    toolNames?: ToolNames;
+}): WireRequest;

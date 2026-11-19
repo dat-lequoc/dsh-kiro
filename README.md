@@ -336,7 +336,6 @@ KIRO_LIVE=1 KIRO_MODEL=claude-opus-5 KIRO_EFFORT=high npx vitest run tests/live-
 
 - Image content is currently rejected with `UNSUPPORTED_CONTENT`.
 - `temperature`, `topP`, and stop sequences have no accepted placement in Kiro's `generateAssistantResponse` request and are ignored.
-- Tool names must match `^[A-Za-z][A-Za-z0-9_]{0,63}$`.
 - SOCKS proxies are not supported.
 
 ## Acknowledgements

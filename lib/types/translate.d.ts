@@ -111,9 +111,11 @@ export declare function finishReasonOf(reason: string | undefined, details: Wire
 /**
  * Translate decoded frames into harness chunks.
  * @param frames - decoded event-stream frames in arrival order.
+ * @param contextWindow - model context capacity for percentage-based usage.
+ * @param fromWireToolName - restore original names before exposing tool calls to DSH.
  * @returns deltas as they arrive, every `block-end`, exact terminal `usage`
  *   when supplied by Kiro, then one `finish`.
  * @throws `LlmError` for an in-band service exception frame or a malformed payload.
  */
-export declare function translate(frames: AsyncIterable<WireFrame>, contextWindow?: number): AsyncGenerator<StreamChunk>;
+export declare function translate(frames: AsyncIterable<WireFrame>, contextWindow?: number, fromWireToolName?: (name: string) => string): AsyncGenerator<StreamChunk>;
 export {};
