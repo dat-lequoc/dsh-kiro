@@ -229,6 +229,11 @@ export interface KiroAdapterOptions {
    * one upstream.
    */
   resolveAttachments?: () => AttachmentStore | undefined
+  /**
+   * Receive each credit charge Kiro meters for a request, keyed by the DSH
+   * session that issued it. Requests without a session are not recorded.
+   */
+  recordCredits?: (sessionId: string, credits: number) => void
 }
 
 /** The attachment-store surface this adapter uses: one call, by reference. */
@@ -643,9 +648,14 @@ export class KiroAdapter extends LlmAdapter {
 
     // The context capacity the percentage is a fraction of: the live catalog's
     // exact value when discovery supplied one, else the configured default.
+    const recordCredits = this.config.recordCredits
+    const sessionId = options.sessionId
     yield* translate(
       decodeFrames(response.body, onActivity),
       contextCapacity(selected?.contextWindow ?? connection.defaultContextWindow, connection),
+      recordCredits === undefined || sessionId === undefined || sessionId.length === 0
+        ? undefined
+        : credits => { recordCredits(sessionId, credits) },
     )
   }
 }

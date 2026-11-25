@@ -9,3 +9,11 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 export function credentialDirectory(): string {
   return dshHomePath('storages', 'kiro-auth')
 }
+
+/**
+ * Return the directory holding the per-session credit ledgers.
+ * @returns an absolute directory below DSH home.
+ */
+export function creditDirectory(): string {
+  return dshHomePath('storages', 'kiro-credits')
+}

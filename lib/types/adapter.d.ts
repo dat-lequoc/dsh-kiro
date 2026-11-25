@@ -128,6 +128,11 @@ export interface KiroAdapterOptions {
      * one upstream.
      */
     resolveAttachments?: () => AttachmentStore | undefined;
+    /**
+     * Receive each credit charge Kiro meters for a request, keyed by the DSH
+     * session that issued it. Requests without a session are not recorded.
+     */
+    recordCredits?: (sessionId: string, credits: number) => void;
 }
 /** The attachment-store surface this adapter uses: one call, by reference. */
 export interface AttachmentStore {

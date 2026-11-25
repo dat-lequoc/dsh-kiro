@@ -31,13 +31,14 @@ import {
 import type { AttachmentStore, KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import { kiroCredentialDirectory, resolveTokenFromDirectories } from './auth.ts'
 import { discoverKiroProfileArn, KiroModelDiscovery } from './discovery.ts'
-import { credentialDirectory } from './paths.ts'
+import { creditDirectory, credentialDirectory } from './paths.ts'
 import { FileModelSettingsStore } from './model-settings.ts'
 import { assertKiroProfileArn } from './profile.ts'
 import { assertKiroRegion } from './region.ts'
 import { parseProxyUrl, postForm, postJson } from './transport.ts'
 import { registerWebApi } from './web.ts'
 import { KiroUsageService } from './usage.ts'
+import { KiroCreditLedger } from './credits.ts'
 
 export {
   contextCapacity,
@@ -117,11 +118,13 @@ export type {
   SocialDeviceLoginPoll,
   SocialDeviceLoginSession,
 } from './login.ts'
-export { credentialDirectory } from './paths.ts'
+export { creditDirectory, credentialDirectory } from './paths.ts'
 export { assertKiroProfileArn, profileRegion } from './profile.ts'
 export { assertKiroRegion } from './region.ts'
 export { getJson, parseProxyUrl, postForm, postJson, postJsonWithHeaders } from './transport.ts'
 export { KiroUsageService, parseKiroUsage } from './usage.ts'
+export { CREDIT_SESSION_PATTERN, KiroCreditLedger } from './credits.ts'
+export type { KiroCreditSum } from './credits.ts'
 export type { KiroUsage, KiroUsageRow, KiroUsageServiceOptions } from './usage.ts'
 export { buildModelRequestFields } from './serialize.ts'
 export type { ModelLimits, RequestDefaults } from './serialize.ts'
@@ -452,6 +455,8 @@ export function apply(ctx: Context, config: Config): void {
   const discovery = new KiroModelDiscovery({ resolveToken: tokenResolver })
   const modelSettings = new FileModelSettingsStore()
   const usage = new KiroUsageService({ resolveToken: tokenResolver })
+  // Each metered charge, by session, so the client can show what a Turn cost.
+  const credits = new KiroCreditLedger(creditDirectory())
   const adapter = new KiroAdapter({
     options,
     resolveToken: tokenResolver,
@@ -477,6 +482,7 @@ export function apply(ctx: Context, config: Config): void {
       const store = ctx.get('attachments') as AttachmentStore | undefined
       return typeof store?.readImageRequest === 'function' ? store : undefined
     },
+    recordCredits: (sessionId, value) => { void credits.record(sessionId, value) },
   })
   ctx.llm.registerConfigurableProviders([
     { provider: PROVIDER, displayName: 'Kiro', settingsNs: NS, settingsPath: [] },
@@ -502,6 +508,7 @@ export function apply(ctx: Context, config: Config): void {
     discovery,
     modelSettings,
     usage,
+    credits,
     resolveToken: tokenResolver,
   })
 }

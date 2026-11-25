@@ -25,6 +25,7 @@ import type {
   WireContextUsageEvent,
   WireFrame,
   WireMetadataEvent,
+  WireMeteringEvent,
   WireReasoningContentEvent,
   WireStopDetails,
   WireTokenUsage,
@@ -413,6 +414,9 @@ export function finishReasonOf(
 /**
  * Translate decoded frames into harness chunks.
  * @param frames - decoded event-stream frames in arrival order.
+ * @param contextWindow - capacity the context percentage is a fraction of.
+ * @param onMetering - receives each credit charge Kiro reports for this call;
+ *   a throwing callback is ignored so metering can never break a turn.
  * @returns deltas as they arrive, every `block-end`, exact terminal `usage`
  *   when supplied by Kiro, then one `finish`.
  * @throws `LlmError` for an in-band service exception frame or a malformed payload.
@@ -420,6 +424,7 @@ export function finishReasonOf(
 export async function* translate(
   frames: AsyncIterable<WireFrame>,
   contextWindow?: number,
+  onMetering?: (credits: number) => void,
 ): AsyncGenerator<StreamChunk> {
   const router = new TextRouter()
   const guard = new LegacyMarkerGuard()
@@ -544,8 +549,24 @@ export async function* translate(
         }
         break
       }
+      case 'meteringEvent': {
+        const event = parsePayload<Partial<WireMeteringEvent>>(frame)
+        // What this call cost the account. DSH's usage schema has no credit
+        // field, so the charge leaves through the callback rather than a chunk.
+        const credits = event.usage
+        const creditUnit = event.unit === undefined || event.unit === 'credit'
+        if (onMetering !== undefined && creditUnit && typeof credits === 'number'
+          && Number.isFinite(credits) && credits >= 0) {
+          try {
+            onMetering(credits)
+          } catch {
+            // Metering is decoration; it must never fail the stream.
+          }
+        }
+        break
+      }
       default:
-        // meteringEvent, followupPrompt, and future events carry no additional
+        // followupPrompt and future events carry no additional
         // harness vocabulary; the protocol grows by adding cases here, never by
         // surfacing unknown frames as content.
         break

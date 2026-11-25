@@ -30,6 +30,8 @@ import {
 import type { DeviceLoginPoll, ManagedCredentials, RefreshTokenOrigin } from './login.ts'
 import { getJson, postJson } from './transport.ts'
 import type { KiroUsageService } from './usage.ts'
+import { CREDIT_SESSION_PATTERN } from './credits.ts'
+import type { KiroCreditLedger } from './credits.ts'
 
 /** Everything the Kiro Web API needs from the running plugin. */
 export interface WebDependencies {
@@ -38,6 +40,8 @@ export interface WebDependencies {
   discovery: KiroModelDiscovery
   modelSettings: FileModelSettingsStore
   usage: KiroUsageService
+  /** Per-turn credit ledger; the `turn-credits` route is absent without it. */
+  credits?: KiroCreditLedger
   resolveToken: (connection: KiroConnectionOptions, signal: AbortSignal) => Promise<KiroToken>
 }
 
@@ -665,6 +669,20 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
                 ok: true,
                 value: await modelPayload(models, 'live', dependencies.modelSettings, connection.maxContextWindow),
               })
+              return
+            }
+            if (path === 'turn-credits' && request.method === 'GET' && dependencies.credits !== undefined) {
+              // Credits one session spent inside a Turn's start/end window.
+              const query = new URL(request.url ?? '/', 'http://dsh.local').searchParams
+              const sessionId = query.get('sessionId') ?? ''
+              const from = Number(query.get('from'))
+              const to = Number(query.get('to'))
+              if (!CREDIT_SESSION_PATTERN.test(sessionId) || !Number.isFinite(from)
+                || !Number.isFinite(to) || from > to) {
+                sendJson(response, 400, { ok: false, error: 'invalid-query' })
+                return
+              }
+              sendJson(response, 200, { ok: true, value: await dependencies.credits.sum(sessionId, from, to) })
               return
             }
             if (path === 'usage' && (request.method === 'GET' || request.method === 'POST')) {

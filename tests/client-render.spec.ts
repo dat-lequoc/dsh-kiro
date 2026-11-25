@@ -138,8 +138,10 @@ describe('the shipped settings page and composer chip', () => {
   async function renderPage(
     payload: Record<string, unknown>,
     usage?: Record<string, unknown>,
-    only: 'settings' | 'quota' = 'settings',
+    only: 'settings' | 'quota' | 'credits' = 'settings',
     selected: { provider: string; model: string } = { provider: 'kiro', model: 'claude-opus-5' },
+    credits?: Record<string, unknown>,
+    creditProps: Record<string, unknown> = {},
   ): Promise<{
     tree: Element | null
     rerender: () => Element | null
@@ -172,6 +174,10 @@ describe('the shipped settings page and composer chip', () => {
       requestAnimationFrame: (callback: () => void) => { callback(); return 0 },
       confirm: () => true,
       location: { href: 'http://localhost/' },
+      localStorage: (() => {
+        const items = new Map<string, string>()
+        return { getItem: (key: string) => items.get(key) ?? null, setItem: (key: string, value: string) => { items.set(key, value) } }
+      })(),
     }
     ;(globalThis as any).window = win
     ;(globalThis as any).document = {
@@ -190,7 +196,7 @@ describe('the shipped settings page and composer chip', () => {
         method: options?.method,
         body: options?.body === undefined ? undefined : JSON.parse(options.body),
       })
-      const value = path.startsWith('/usage') ? usage : payload
+      const value = path.startsWith('/usage') ? usage : path.startsWith('/turn-credits') ? credits : payload
       if (value === undefined) {
         return { ok: false, status: 500, json: async () => ({ ok: false, error: 'no ' + path }) }
       }
@@ -209,6 +215,7 @@ describe('the shipped settings page and composer chip', () => {
 
     let renderSettings: ((props: unknown) => unknown) | undefined
     let renderQuota: ((props: unknown) => unknown) | undefined
+    let renderCredits: ((props: unknown) => unknown) | undefined
     const directory = {
       getSnapshot: () => ({ status: 'ready', current: selected, routable: true }),
       subscribe: () => () => undefined,
@@ -219,6 +226,7 @@ describe('the shipped settings page and composer chip', () => {
         inject: (_name: string, use: () => void) => use(),
         register: (options: { name?: string }, render: (props: unknown) => unknown) => {
           if (options.name === 'conversation.input.right') renderQuota = render
+          else if (options.name === 'conversation.chat.assistant-actions') renderCredits = render
           else renderSettings = render
         },
       },
@@ -235,10 +243,15 @@ describe('the shipped settings page and composer chip', () => {
     })
     expect(renderSettings).toBeDefined()
     expect(renderQuota).toBeDefined()
+    expect(renderCredits).toBeDefined()
 
     // One component per load: the hooks store belongs to the component that
     // first consumes it, so the settings page and the chip are never mixed.
-    const mounted = (only === 'quota' ? renderQuota!({ directory }) : renderSettings!({})) as Element
+    const mounted = (only === 'quota'
+      ? renderQuota!({ directory })
+      : only === 'credits'
+        ? renderCredits!(creditProps)
+        : renderSettings!({})) as Element
     const component = mounted.type as (props: unknown) => unknown
     const rerender = (): Element | null => hooks.render(component, mounted.props) as Element | null
     let tree = rerender()
@@ -450,5 +463,48 @@ describe('the shipped settings page and composer chip', () => {
     ;(apply!.props['onClick'] as () => void)()
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(calls.some(call => call.path === '/context')).toBe(false)
+  })
+
+  /** A Chat snapshot holding one closed Turn whose closing reply is `message-1`. */
+  function chatWithTurn(): unknown {
+    const tail = { kind: 'turn-tail', data: { closing: { finalNode: { messageId: 'message-1' } } } }
+    const snapshot = {
+      timeline: { turnOrder: [1], turns: new Map([[1, { start: { time: 1_000 }, end: { time: 2_000 } }]]) },
+      locations: { getTurn: () => ['tail'] },
+      nodes: { get: (key: string) => (key === 'tail' ? tail : undefined) },
+    }
+    return (select: (value: unknown) => unknown) => select(snapshot)
+  }
+
+  it('shows what one Turn cost in its reply action row', async () => {
+    const { tree, calls } = await renderPage(statusPayload([], null), undefined, 'credits', undefined,
+      { credits: 1.234, calls: 3 },
+      { sessionId: 'session-1', messageId: 'message-1', useChat: chatWithTurn() })
+    expect(calls).toContainEqual({ path: '/turn-credits?sessionId=session-1&from=1000&to=2500', method: undefined, body: undefined })
+    expect(tree).not.toBeNull()
+    expect(hasClass(tree!, 'dshk-turn-credits')).toBe(true)
+    expect(textOf(tree)).toBe('1.23 credits')
+  })
+
+  it('renders nothing for a Turn without Kiro charges', async () => {
+    const { tree } = await renderPage(statusPayload([], null), undefined, 'credits', undefined,
+      { credits: 0, calls: 0 },
+      { sessionId: 'session-1', messageId: 'message-1', useChat: chatWithTurn() })
+    expect(tree).toBeNull()
+  })
+
+  it('offers a settings toggle that turns the label off', async () => {
+    const page = await renderPage(statusPayload([], null))
+    // The fake renderer is shallow, so the toggle is still a component element.
+    const element = findAll(page.tree!).find(candidate => typeof candidate.type === 'function'
+      && (candidate.type as { name?: string }).name === 'TurnCreditsToggle')
+    expect(element).toBeDefined()
+    const toggle = (element!.type as (props: unknown) => Element)(element!.props)
+    const input = findAll(toggle).find(candidate => candidate.type === 'input')
+    expect(input?.props['checked']).toBe(true)
+    ;(input!.props['onChange'] as (event: unknown) => void)({ target: { checked: false } })
+    expect((globalThis as any).window.localStorage.getItem('dsh-kiro.showTurnCredits')).toBe('false')
+    expect(findAll((element!.type as (props: unknown) => Element)(element!.props))
+      .find(candidate => candidate.type === 'input')?.props['checked']).toBe(false)
   })
 })

@@ -228,6 +228,26 @@ describe('translate', () => {
     }])
   })
 
+  it('hands each metered credit charge to the callback', async () => {
+    const charges: number[] = []
+    const chunks = await collect(translate(decodeFrames(chunked(join(
+      textFrame('ok'),
+      event('meteringEvent', '{"unit":"credit","unitPlural":"credits","usage":0.02}'),
+      event('meteringEvent', '{"unit":"token","unitPlural":"tokens","usage":9}'),
+      event('meteringEvent', '{"unit":"credit","usage":-1}'),
+    ), 4096)), undefined, credits => { charges.push(credits) }))
+    expect(charges).toEqual([0.02])
+    expect(textOf(chunks)).toBe('ok')
+  })
+
+  it('keeps streaming when the metering callback throws', async () => {
+    const chunks = await collect(translate(decodeFrames(chunked(join(
+      event('meteringEvent', '{"unit":"credit","usage":0.5}'),
+      textFrame('still here'),
+    ), 4096)), undefined, () => { throw new Error('ledger down') }))
+    expect(textOf(chunks)).toBe('still here')
+  })
+
   it('ignores empty text frames', async () => {
     // Kiro opens most responses with an empty content frame; it must not open a block.
     const chunks = await run(join(textFrame(''), textFrame('real')))
