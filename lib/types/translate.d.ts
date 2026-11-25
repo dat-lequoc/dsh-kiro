@@ -111,9 +111,12 @@ export declare function finishReasonOf(reason: string | undefined, details: Wire
 /**
  * Translate decoded frames into harness chunks.
  * @param frames - decoded event-stream frames in arrival order.
+ * @param contextWindow - capacity the context percentage is a fraction of.
+ * @param onMetering - receives each credit charge Kiro reports for this call;
+ *   a throwing callback is ignored so metering can never break a turn.
  * @returns deltas as they arrive, every `block-end`, exact terminal `usage`
  *   when supplied by Kiro, then one `finish`.
  * @throws `LlmError` for an in-band service exception frame or a malformed payload.
  */
-export declare function translate(frames: AsyncIterable<WireFrame>, contextWindow?: number): AsyncGenerator<StreamChunk>;
+export declare function translate(frames: AsyncIterable<WireFrame>, contextWindow?: number, onMetering?: (credits: number) => void): AsyncGenerator<StreamChunk>;
 export {};

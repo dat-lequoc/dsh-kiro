@@ -79,6 +79,10 @@ window.__ModuleLoader__.load({
       quotaUnlimited: 'no limit',
       quotaLeft: '{percent}% left',
       quotaTitle: 'Kiro usage',
+      turnCredits: '{credits} credits',
+      showTurnCredits: 'Show credits under each reply',
+      showTurnCreditsHint: 'Shows how many Kiro credits each turn used, in the reply action row.',
+      turnCreditsTitle: 'This turn used {credits} Kiro credits across {calls} model calls',
       verified: 'Credential verified',
       verifiedModels: 'models available',
       savedCredential: 'Credentials saved',
@@ -176,6 +180,10 @@ window.__ModuleLoader__.load({
       quotaUnlimited: '无限制',
       quotaLeft: '剩余 {percent}%',
       quotaTitle: 'Kiro 用量',
+      turnCredits: '{credits} 额度',
+      showTurnCredits: '在每条回复下显示额度',
+      showTurnCreditsHint: '在回复操作栏显示这一轮消耗的 Kiro 额度。',
+      turnCreditsTitle: '本轮共 {calls} 次模型调用，消耗 {credits} Kiro 额度',
       verified: '凭据已验证',
       verifiedModels: '个模型可用',
       savedCredential: '凭据已保存',
@@ -372,6 +380,8 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
 .dshk-plan{display:inline-flex;margin-left:auto;padding:3px 8px;border-radius:999px;background:#ede9fe;color:#6d28d9;font-size:10px;font-weight:750}
 .dshk-quota{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid #e5e7eb;border-radius:999px;background:#f9fafb;color:#4b5563;font-size:11px;font-weight:600;line-height:1.5;cursor:pointer;white-space:nowrap}
 .dshk-quota:hover{background:#f3f4f6}.dshk-quota:disabled{cursor:progress;opacity:.6}
+.dshk-toggle{display:flex;align-items:center;gap:10px;margin-top:13px;padding-top:13px;border-top:1px solid #eef0f3;cursor:pointer}.dshk-toggle-text{display:grid;gap:2px}.dshk-toggle-name{font-size:12px;font-weight:650}.dshk-toggle-hint{color:#94a3b8;font-size:10.5px;line-height:15px}
+.dshk-turn-credits{display:inline-flex;align-items:center;height:28px;padding:0 6px;color:#94a3b8;font-size:12px;line-height:16px;white-space:nowrap;font-variant-numeric:tabular-nums;cursor:default}
 .dshk-quota-dot{width:6px;height:6px;flex:none;border-radius:50%;background:#10b981}
 .dshk-quota-low .dshk-quota-dot{background:#f59e0b}.dshk-quota-critical .dshk-quota-dot{background:#ef4444}
 .dshk-usage{display:grid;gap:11px;margin-top:13px;padding-top:13px;border-top:1px solid #eef0f3}.dshk-usage-row{display:grid;gap:6px}.dshk-usage-top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:12px}.dshk-usage-name{font-weight:650}.dshk-usage-metric{color:#64748b;text-align:right}.dshk-bar{height:6px;overflow:hidden;border-radius:999px;background:#eef0f3}.dshk-fill{height:100%;border-radius:inherit;background:linear-gradient(90deg,#8b5cf6,#6366f1)}.dshk-usage-foot{display:flex;justify-content:space-between;gap:12px;color:#94a3b8;font-size:10px}
@@ -464,6 +474,120 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
     function isKiroModel(state) {
       const current = state?.current
       return Boolean(current && current.provider === 'kiro' && typeof current.model === 'string')
+    }
+
+    // Per-turn credits, the "X credits" Kiro Crew shows under each reply. The
+    // Host records every call's meteringEvent by session; this sums the charges
+    // inside one Turn's start/end window.
+    const turnCreditsCache = new Map()
+
+    // Show/hide preference for per-turn credits: browser-only, kept in
+    // localStorage, on by default.
+    const TURN_CREDITS_KEY = 'dsh-kiro.showTurnCredits'
+    const turnCreditsListeners = new Set()
+    function readShowTurnCredits() {
+      try { return window.localStorage.getItem(TURN_CREDITS_KEY) !== 'false' } catch { return true }
+    }
+    function writeShowTurnCredits(value) {
+      try { window.localStorage.setItem(TURN_CREDITS_KEY, value ? 'true' : 'false') } catch {}
+      for (const listener of turnCreditsListeners) listener()
+    }
+    function subscribeShowTurnCredits(listener) {
+      turnCreditsListeners.add(listener)
+      // Follow a change made in another window.
+      const onStorage = (event) => { if (event.key === TURN_CREDITS_KEY) listener() }
+      window.addEventListener('storage', onStorage)
+      return () => { turnCreditsListeners.delete(listener); window.removeEventListener('storage', onStorage) }
+    }
+    function useShowTurnCredits() {
+      return useStoreSnapshot(subscribeShowTurnCredits, readShowTurnCredits, readShowTurnCredits)
+    }
+
+    function formatCredits(value) {
+      if (!Number.isFinite(value) || value <= 0) return '0'
+      if (value < 0.01) return '<0.01'
+      return new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)
+    }
+
+    // The action-row seat only passes messageId, so find the Turn whose closing
+    // reply it is in the Chat snapshot. A closed Turn's bounds never change, so
+    // they are cached by messageId instead of rescanned on every snapshot.
+    const turnSpanCache = new Map()
+
+    function turnSpanFor(snapshot, messageId) {
+      if (typeof messageId !== 'string') return undefined
+      const cached = turnSpanCache.get(messageId)
+      if (cached !== undefined) return cached
+      const order = snapshot?.timeline?.turnOrder
+      if (!Array.isArray(order) || typeof snapshot.locations?.getTurn !== 'function') return undefined
+      for (let index = order.length - 1; index >= 0; index--) {
+        const turn = order[index]
+        const keys = snapshot.locations.getTurn(turn)
+        for (let k = keys.length - 1; k >= 0; k--) {
+          const node = snapshot.nodes.get(keys[k])
+          if (node?.kind !== 'turn-tail' || node.data?.closing?.finalNode?.messageId !== messageId) continue
+          const entry = snapshot.timeline.turns.get(turn)
+          const from = entry?.start?.time
+          const to = entry?.end?.time
+          if (typeof from !== 'number' || typeof to !== 'number') return undefined
+          const span = `${from}|${to}`
+          turnSpanCache.set(messageId, span)
+          return span
+        }
+      }
+      return undefined
+    }
+
+    function KiroTurnCredits({ ctx, sessionId, messageId, useChat }) {
+      const t = useMemo(() => translator(ctx), [ctx])
+      const visible = useShowTurnCredits()
+      const selectSpan = useCallback((snapshot) => turnSpanFor(snapshot, messageId), [messageId])
+      // The Host supplies useChat to session-scoped seats; without it, show nothing.
+      const span = typeof useChat === 'function' ? useChat(selectSpan) : undefined
+      const [from, to] = typeof span === 'string' ? span.split('|').map(Number) : []
+      const key = typeof span === 'string' && typeof sessionId === 'string' ? `${sessionId}|${span}` : undefined
+      const [value, setValue] = useState(() => (key === undefined ? undefined : turnCreditsCache.get(key)))
+
+      useEffect(() => {
+        if (key === undefined) return undefined
+        const cached = turnCreditsCache.get(key)
+        if (cached !== undefined) { setValue(cached); return undefined }
+        let active = true
+        // A Turn that just ended: give the ledger write a moment to land.
+        const delay = Date.now() - to < 5000 ? 800 : 0
+        const timer = window.setTimeout(async () => {
+          try {
+            // 500ms of slack so the last call's charge is not lost to clock skew.
+            const query = new URLSearchParams({ sessionId, from: String(from), to: String(to + 500) })
+            const result = await api(`/turn-credits?${query.toString()}`)
+            turnCreditsCache.set(key, result)
+            if (active) setValue(result)
+          } catch {
+            // Decoration only: a failed read simply shows nothing.
+          }
+        }, delay)
+        return () => { active = false; window.clearTimeout(timer) }
+      }, [key])
+
+      if (!visible || value === undefined || !(value.calls > 0)) return null
+      const credits = formatCredits(value.credits)
+      return React.createElement('div', {
+        className: 'dshk-turn-credits',
+        'data-testid': 'kiro-turn-credits',
+        title: t('turnCreditsTitle').replace('{credits}', credits).replace('{calls}', String(value.calls)),
+      }, t('turnCredits').replace('{credits}', credits))
+    }
+
+    function TurnCreditsToggle({ t }) {
+      const checked = useShowTurnCredits()
+      return React.createElement('label', { className: 'dshk-toggle' },
+        React.createElement('input', {
+          className: 'dshk-check', type: 'checkbox', checked,
+          onChange: (event) => writeShowTurnCredits(event.target.checked),
+        }),
+        React.createElement('span', { className: 'dshk-toggle-text' },
+          React.createElement('span', { className: 'dshk-toggle-name' }, t('showTurnCredits')),
+          React.createElement('span', { className: 'dshk-toggle-hint' }, t('showTurnCreditsHint'))))
     }
 
     function KiroQuota({ ctx, directory }) {
@@ -1069,6 +1193,8 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
               React.createElement('div', { className: 'dshk-usage-foot' },
                 React.createElement('span', null, row.resetAt ? `${t('resets')} ${formatDate(row.resetAt)}` : ''),
                 React.createElement('span', null, `${t('updated')} ${formatDate(usage.fetchedAt)}`))))),
+          // Toggle for the per-turn credit label.
+          React.createElement(TurnCreditsToggle, { t }),
           notice && React.createElement('div', { className: 'dshk-notice', role: 'status' }, notice),
           usageError && React.createElement('div', { className: 'dshk-error' }, usageError),
           error && React.createElement('div', { className: 'dshk-error' }, error)),
@@ -1179,6 +1305,14 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         }
         if (typeof ctx.inject === 'function') ctx.inject(['slots', 'modelDirectories'], registerQuota)
         else registerQuota(ctx)
+        // What each Turn cost, in the reply's action row (copy / feedback / branch /
+        // time). A Turn with no Kiro charge (another provider) renders nothing.
+        ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
+          name: 'conversation.chat.assistant-actions',
+          id: 'kiro-turn-credits',
+          order: 100,
+          locale: NS,
+        }, (props) => React.createElement(KiroTurnCredits, { ...props, ctx })))
       },
     }
   },

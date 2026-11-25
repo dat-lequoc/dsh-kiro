@@ -4,3 +4,8 @@
  * @returns an absolute directory below DSH home.
  */
 export declare function credentialDirectory(): string;
+/**
+ * Return the directory holding the per-session credit ledgers.
+ * @returns an absolute directory below DSH home.
+ */
+export declare function creditDirectory(): string;
