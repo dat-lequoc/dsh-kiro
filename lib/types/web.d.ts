@@ -4,6 +4,7 @@ import '@deepseek-ai/dsh-host-webserver';
 import type { KiroConnectionOptions } from './adapter.ts';
 import type { KiroToken } from './auth.ts';
 import type { KiroModelDiscovery } from './discovery.ts';
+import type { KiroModelCatalog } from './model-catalog.ts';
 import type { FileModelSettingsStore } from './model-settings.ts';
 import type { KiroUsageService } from './usage.ts';
 /** Everything the Kiro Web API needs from the running plugin. */
@@ -11,6 +12,8 @@ export interface WebDependencies {
     managedDirectory: string;
     options: () => KiroConnectionOptions;
     discovery: KiroModelDiscovery;
+    /** Persistent catalog every model read goes through. */
+    catalog: KiroModelCatalog;
     modelSettings: FileModelSettingsStore;
     usage: KiroUsageService;
     resolveToken: (connection: KiroConnectionOptions, signal: AbortSignal) => Promise<KiroToken>;

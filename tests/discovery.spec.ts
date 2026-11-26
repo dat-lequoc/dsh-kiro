@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { KiroConnectionOptions } from '../src/adapter.ts'
 import {
+  discoverKiroProfileArn,
   KiroModelDiscovery,
   modelSupportsThinking,
   parseAvailableModels,
@@ -361,5 +362,32 @@ describe('input modalities come from the catalog, not the model id', () => {
     expect(models.find(model => model.id === 'claude-opus-5')?.inputModalities).toEqual(['text', 'image'])
     expect(models.find(model => model.id === 'glm-5')?.inputModalities).toEqual(['text'])
     expect(models.find(model => model.id === 'mystery')?.inputModalities).toBeUndefined()
+  })
+})
+
+describe('discoverKiroProfileArn', () => {
+  const token = {
+    accessToken: 'access-token',
+    region: 'us-east-1',
+    expiresAt: Date.now() + 3_600_000,
+    authMethod: 'idc' as const,
+  }
+
+  it('asks for no more profiles than the service accepts', async () => {
+    const request = vi.fn(async () => ({
+      status: 200,
+      body: { profiles: [{ arn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/found' }] },
+    }))
+
+    const found = await discoverKiroProfileArn(
+      { region: 'us-east-1' },
+      token,
+      new AbortController().signal,
+      request,
+    )
+
+    // More than ten is rejected as REQUEST_BODY_INVALID, which used to lose the ARN.
+    expect(request.mock.calls[0]?.[1]).toEqual({ maxResults: 10 })
+    expect(found).toBe('arn:aws:codewhisperer:us-east-1:123456789012:profile/found')
   })
 })

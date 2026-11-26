@@ -39,6 +39,7 @@ window.__ModuleLoader__.load({
       connectTitle: 'Connect Kiro',
       chooseMethod: 'Choose how you want to connect your Kiro account.',
       recommended: 'Recommended',
+      emailDesc: 'Enter your work email and sign in through your organization’s own SSO — the same flow the Kiro IDE uses.',
       builderDesc: 'Best for most users. Sign in with a free AWS Builder ID.',
       idcDesc: 'Use your organization’s AWS IAM Identity Center.',
       googleDesc: 'Get a one-time code and sign in on app.kiro.dev with Google.',
@@ -53,6 +54,10 @@ window.__ModuleLoader__.load({
       copy: 'Copy',
       copied: 'Copied',
       method: 'Login method',
+      email: 'Work email (company SSO)',
+      emailPending: 'Finish signing in in the browser window: enter your work email, then complete your organization’s SSO.',
+      local: 'Local Kiro CLI credential',
+      localDesc: 'Reuse the sign-in kiro-cli login stored on this machine (External IdP or IAM Identity Center).',
       builderId: 'AWS Builder ID',
       idc: 'IAM Identity Center',
       google: 'Google',
@@ -136,6 +141,7 @@ window.__ModuleLoader__.load({
       connectTitle: '连接 Kiro',
       chooseMethod: '请选择连接 Kiro 账号的方式。',
       recommended: '推荐',
+      emailDesc: '输入工作邮箱，跳转到公司自己的 SSO 完成登录——与 Kiro IDE 的登录流程一致。',
       builderDesc: '适合大多数用户，使用免费的 AWS Builder ID 登录。',
       idcDesc: '使用组织提供的 AWS IAM Identity Center。',
       googleDesc: '获取一次性验证码，然后在 app.kiro.dev 使用 Google 登录。',
@@ -150,6 +156,10 @@ window.__ModuleLoader__.load({
       copy: '复制',
       copied: '已复制',
       method: '登录方式',
+      email: '工作邮箱（公司 SSO）',
+      emailPending: '请在浏览器窗口中完成登录：输入工作邮箱，再完成公司 SSO。',
+      local: '本机 Kiro CLI 凭证',
+      localDesc: '复用 kiro-cli login 已保存的登录状态（External IdP 或 IAM Identity Center）。',
       builderId: 'AWS Builder ID',
       idc: 'IAM Identity Center',
       google: 'Google',
@@ -697,7 +707,7 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         setMethod(nextMethod)
         setSelectedMethod(nextMethod)
         setError('')
-        if (nextMethod === 'builder-id' || nextMethod === 'google' || nextMethod === 'github') {
+        if (nextMethod === 'builder-id' || nextMethod === 'google' || nextMethod === 'github' || nextMethod === 'local') {
           void login(nextMethod)
         }
       }, [login])
@@ -907,7 +917,9 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
                 : []
 
       const methodChoices = [
-        { id: 'builder-id', icon: 'AWS', title: t('builderId'), description: t('builderDesc'), recommended: true },
+        { id: 'email', icon: '@', title: t('email'), description: t('emailDesc'), recommended: true },
+        { id: 'local', icon: 'ID', title: t('local'), description: t('localDesc') },
+        { id: 'builder-id', icon: 'AWS', title: t('builderId'), description: t('builderDesc') },
         { id: 'idc', icon: 'SSO', title: t('idc'), description: t('idcDesc') },
         { id: 'google', icon: 'G', title: t('google'), description: t('googleDesc') },
         { id: 'github', icon: 'GH', title: t('github'), description: t('githubDesc') },
@@ -959,7 +971,10 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
               React.createElement('div', { className: 'dshk-step-title' },
                 methodChoices.find((choice) => choice.id === flow.method)?.title || flow.method)),
             React.createElement('div', { className: 'dshk-code' },
-              t('code'), React.createElement('strong', null, flow.userCode),
+              flow.userCode
+                ? React.createElement(React.Fragment, null,
+                    t('code'), React.createElement('strong', null, flow.userCode))
+                : t('emailPending'),
               React.createElement('div', { className: 'dshk-meta' }, t('pending')),
               authorizationControls),
             error && React.createElement('div', { className: 'dshk-error' }, error))
@@ -972,6 +987,7 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
           }, `‹ ${t('back')}`),
           React.createElement('div', { className: 'dshk-step-title' }, selectedChoice?.title || t('connectTitle'))),
         loginFields.length > 0 && React.createElement('div', { className: 'dshk-grid' }, loginFields),
+        method === 'email' && React.createElement('p', { className: 'dshk-chooser-copy' }, t('emailPending')),
         React.createElement('div', { className: 'dshk-actions', style: { marginTop: '14px' } },
           React.createElement('button', {
             className: 'dshk-btn dshk-primary', disabled: !!busy, onClick: () => login(method),
@@ -980,7 +996,7 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         error && React.createElement('div', { className: 'dshk-error' }, error))
 
       const authContent = pendingFlow
-        ?? (busy === 'login' && (method === 'builder-id' || method === 'google' || method === 'github')
+        ?? (busy === 'login' && (method === 'builder-id' || method === 'google' || method === 'github' || method === 'email')
           ? React.createElement('div', { className: 'dshk-working' }, t('signingIn'))
           : selectedMethod === null ? chooser : methodForm)
 

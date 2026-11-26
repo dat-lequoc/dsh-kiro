@@ -17,6 +17,7 @@ import type { GenerateOptions, Message, StreamChunk } from '@deepseek-ai/dsh-llm
 import { httpErrorCode } from '../src/adapter.ts'
 import { serializeRequest } from '../src/serialize.ts'
 import { contextUsageTokens, translate } from '../src/translate.ts'
+import { toolNames } from '../src/tool-names.ts'
 import { decodeFrames } from '../src/eventstream.ts'
 import type { WireHistoryEntry } from '../src/types.ts'
 import { chunked, frame, join } from './frames.ts'
@@ -652,5 +653,29 @@ describe('P1-3 generation options reach the only field that accepts them', () =>
       .toThrowError(expect.objectContaining({ code: 'INVALID_REQUEST' }))
     expect(() => serializeFor({ maxTokens: 1.5 }))
       .toThrowError(expect.objectContaining({ code: 'INVALID_REQUEST' }))
+  })
+})
+
+describe('tool names across the wire', () => {
+  const original = 'mcp__bat-mcp-oauth-function__bat-agg-metrics'
+
+  it('declares the encoded name and reports the harness name back', async () => {
+    const names = toolNames([original])
+    const wire = names.wire(original)
+    const collected: StreamChunk[] = []
+    for await (const chunk of translate(
+      decodeFrames(chunked(join(
+        event('toolUseEvent', { toolUseId: 't1', name: wire, input: '{}' }),
+        event('toolUseEvent', { toolUseId: 't1', stop: true }),
+      ), 4096)),
+      200_000,
+      names.harness,
+    )) {
+      collected.push(chunk)
+    }
+    const call = collected.find(chunk =>
+      chunk.type === 'block-end' && chunk.block.type === 'tool-call')
+    expect(call?.type === 'block-end' && call.block.type === 'tool-call' ? call.block.name : '')
+      .toBe(original)
   })
 })

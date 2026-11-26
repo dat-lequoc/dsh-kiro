@@ -62,6 +62,10 @@ let home: string
 let directory: string
 let handler: (request: IncomingMessage, response: ServerResponse) => Promise<void>
 
+/** Variables `os.homedir()` reads, saved so a real sign-in cannot leak into a test. */
+const HOME_VARIABLES = ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'] as const
+const savedHome = new Map<string, string | undefined>()
+
 /** Drive one request through the registered Kiro API handler. */
 async function call(method: string, path: string, body?: unknown): Promise<{ status: number; value: any }> {
   const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))]
@@ -109,6 +113,15 @@ async function importKey(key: string, label: string): Promise<string> {
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), 'dsh-kiro-workflow-'))
   process.env.DSH_HOME = home
+  // The status route also reads Kiro's own SSO cache under the user's home, so a
+  // developer who is signed in must not turn these routes "authenticated".
+  for (const name of HOME_VARIABLES) {
+    savedHome.set(name, process.env[name])
+  }
+  process.env.HOME = home
+  process.env.USERPROFILE = home
+  delete process.env.HOMEDRIVE
+  delete process.env.HOMEPATH
   directory = join(home, 'storages', 'kiro-auth')
   wire.state.keys.clear()
   wire.state.refreshes.length = 0
@@ -132,6 +145,7 @@ beforeEach(async () => {
     managedDirectory: directory,
     options: () => resolveAdapterOptions({ region: 'us-east-1' }),
     discovery: { current: () => undefined, clear: () => undefined, list: async () => [] },
+    catalog: { peek: async () => undefined, snapshot: () => undefined, invalidate: () => undefined, refresh: async () => { throw new Error('no discovery in this test') } },
     modelSettings: new FileModelSettingsStore(),
     usage: { current: () => undefined, clear: () => undefined, get: async () => ({}) },
     resolveToken: async () => { throw new Error('not used by these routes') },
@@ -142,6 +156,11 @@ beforeEach(async () => {
 afterEach(async () => {
   clearTokenCache()
   delete process.env.DSH_HOME
+  for (const [name, value] of savedHome) {
+    if (value === undefined) delete process.env[name]
+    else process.env[name] = value
+  }
+  savedHome.clear()
   await rm(home, { recursive: true, force: true })
 })
 

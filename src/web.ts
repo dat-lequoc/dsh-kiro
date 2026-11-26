@@ -12,6 +12,7 @@ import { kiroCredentialDirectory } from './auth.ts'
 import type { KiroToken } from './auth.ts'
 import { discoverKiroProfileArn } from './discovery.ts'
 import type { KiroModelDiscovery } from './discovery.ts'
+import type { KiroCatalogSnapshot, KiroModelCatalog } from './model-catalog.ts'
 import { modelSelection } from './model-settings.ts'
 import type { FileModelSettingsStore } from './model-settings.ts'
 import {
@@ -28,7 +29,10 @@ import {
   syncManagedCredentialFile,
 } from './login.ts'
 import type { DeviceLoginPoll, ManagedCredentials, RefreshTokenOrigin } from './login.ts'
-import { getJson, postJson } from './transport.ts'
+import { readLocalKiroCredentials, refreshLocalKiroCredentials } from './local-credentials.ts'
+import { defaultJsonTransport, startPortalLogin } from './portal-login.ts'
+import type { PortalOrganization } from './portal-login.ts'
+import { getJson, postForm, postJson } from './transport.ts'
 import type { KiroUsageService } from './usage.ts'
 
 /** Everything the Kiro Web API needs from the running plugin. */
@@ -36,6 +40,8 @@ export interface WebDependencies {
   managedDirectory: string
   options: () => KiroConnectionOptions
   discovery: KiroModelDiscovery
+  /** Persistent catalog every model read goes through. */
+  catalog: KiroModelCatalog
   modelSettings: FileModelSettingsStore
   usage: KiroUsageService
   resolveToken: (connection: KiroConnectionOptions, signal: AbortSignal) => Promise<KiroToken>
@@ -43,7 +49,7 @@ export interface WebDependencies {
 
 interface LoginFlow {
   status: 'pending' | 'complete' | 'error'
-  kind: 'device' | 'social-device'
+  kind: 'device' | 'social-device' | 'portal' | 'local'
   method: string
   /** Account this login replaces; absent when it adds one. */
   accountId?: string
@@ -221,16 +227,21 @@ function publicLogin(flow: LoginFlow | undefined): Record<string, unknown> {
   }
 }
 
+/**
+ * Project the stored catalog for the page; with none stored yet, the
+ * configured catalog is shown and labelled as such.
+ */
 async function modelPayload(
-  models: readonly KiroCatalogModel[],
-  source: 'live' | 'configured',
+  snapshot: KiroCatalogSnapshot | undefined,
+  connection: KiroConnectionOptions,
   store: FileModelSettingsStore,
-  maxContextWindow?: number,
 ): Promise<unknown> {
+  const models = snapshot?.models ?? connection.models
+  const maxContextWindow = connection.maxContextWindow
   const selection = await modelSelection(store, models)
   return {
-    source,
-    fetchedAt: Date.now(),
+    source: snapshot === undefined ? 'configured' : 'live',
+    fetchedAt: snapshot?.fetchedAt ?? Date.now(),
     enabledModelIds: selection.enabledModelIds,
     models: selection.models.map(model => ({
       id: model.id,
@@ -273,7 +284,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       ? { authenticated: false as const, authMethod: undefined, region: undefined, expiresAt: undefined, profileArn: undefined }
       : await credentialSummary(kiroCredentialDirectory())
     const connection = dependencies.options()
-    const cached = dependencies.discovery.current(connection)
+    const catalog = await dependencies.catalog.peek(connection)
     const accounts = await accountStore().snapshot()
     return {
       authenticated: managed.authenticated || external.authenticated,
@@ -286,12 +297,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       activeAccountId: accounts.activeAccountId,
       contextWindowCap: connection.maxContextWindow,
       login: publicLogin(login),
-      models: await modelPayload(
-        cached ?? connection.models,
-        cached === undefined ? 'configured' : 'live',
-        dependencies.modelSettings,
-        connection.maxContextWindow,
-      ),
+      models: await modelPayload(catalog, connection, dependencies.modelSettings),
       usage: dependencies.usage.current(connection),
     }
   }
@@ -328,6 +334,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     }
     const saved = await saveManagedCredentials(dependencies.managedDirectory, complete, target)
     dependencies.discovery.clear()
+    dependencies.catalog.invalidate()
     dependencies.usage.clear()
     emitUpdated()
     return saved
@@ -460,6 +467,129 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     return publicLogin(login)
   }
 
+  /**
+   * Sign in the way Kiro IDE does: let the Kiro portal resolve the work email to
+   * the organization, then finish at that organization's own IdP. Every other
+   * organization answer falls back to the device flow this plugin already runs,
+   * with the region and start URL the portal just resolved.
+   * @param body login request, optionally carrying a portal override.
+   * @returns the pending login the page polls.
+   */
+  const beginPortal = async (body: Record<string, unknown>): Promise<unknown> => {
+    loginController?.abort('starting a new Kiro login')
+    const controller = new AbortController()
+    loginController = controller
+    const target = accountTarget(body)
+    const portalUrl = optionalText(body.portalUrl)
+    const session = await startPortalLogin(
+      portalUrl === undefined ? {} : { portalUrl },
+      defaultJsonTransport,
+      controller.signal,
+    )
+    const flow: LoginFlow = {
+      status: 'pending',
+      kind: 'portal',
+      method: 'email',
+      authUrl: session.portalUrl,
+      startedAt: Date.now(),
+      ...target,
+    }
+    login = flow
+    void (async () => {
+      try {
+        const organization = await session.organization
+        if (organization.kind === 'external-idp') {
+          const idp = await session.beginExternalIdp(organization, { signal: controller.signal })
+          login = {
+            ...flow,
+            authUrl: idp.authUrl,
+            ...idp.userCode === undefined ? {} : { userCode: idp.userCode },
+          }
+          await finish(await idp.credentials, login, controller.signal)
+          return
+        }
+        const connection = dependencies.options()
+        const requestJson = (url: string, value: unknown, signal: AbortSignal) =>
+          postJson(url, value, connection.proxyUrl, signal)
+        if (organization.kind === 'social') {
+          const device = await startSocialDeviceLogin(organization.provider, requestJson, controller.signal)
+          login = { ...flow, authUrl: device.verificationUri, userCode: device.userCode }
+          monitorLogin(
+            device.intervalSeconds,
+            login,
+            controller,
+            () => pollSocialDeviceLogin(device, requestJson, controller.signal),
+          )
+          return
+        }
+        const device = await startDeviceLogin(organization.region, requestJson, controller.signal, {
+          authMethod: organization.provider === 'builderid' ? 'builder-id' : 'idc',
+          startUrl: organization.startUrl,
+        })
+        login = { ...flow, authUrl: device.verificationUri, userCode: device.userCode }
+        monitorLogin(
+          device.intervalSeconds,
+          login,
+          controller,
+          () => pollDeviceLogin(device, requestJson, controller.signal),
+        )
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          login = { ...flow, status: 'error', completedAt: Date.now(), error: safeError(error) }
+        }
+      } finally {
+        await session.close()
+      }
+    })()
+    return publicLogin(login)
+  }
+
+  /**
+   * Reuse the credential a local Kiro CLI or Kiro IDE sign-in already stored.
+   *
+   * An organization whose identity provider only trusts the Kiro IDE callback
+   * cannot finish the browser login here: the browser hands the code back to
+   * the IDE, which then holds the refreshable credential. Importing that
+   * credential keeps the sign-in possible without pasting tokens by hand.
+   * @param body login request, optionally naming the store to read.
+   * @returns the completed login the page polls.
+   */
+  const beginLocal = async (body: Record<string, unknown>): Promise<unknown> => {
+    loginController?.abort('starting a new Kiro login')
+    const controller = new AbortController()
+    loginController = controller
+    const target = accountTarget(body)
+    const dataFile = optionalText(body.dataFile)
+    login = {
+      status: 'pending',
+      kind: 'local',
+      method: 'local',
+      startedAt: Date.now(),
+      ...target,
+    }
+    try {
+      const found = await readLocalKiroCredentials(dataFile === undefined ? {} : { file: dataFile })
+      const connection = dependencies.options()
+      const credentials = await refreshLocalKiroCredentials(
+        found.credentials,
+        (url, value, requestSignal) => postJson(url, value, connection.proxyUrl, requestSignal),
+        controller.signal,
+        (url, form, requestSignal) => postForm(url, form, connection.proxyUrl, requestSignal),
+      )
+      await finish(credentials, login, controller.signal)
+    } catch (cause) {
+      if (!controller.signal.aborted) {
+        login = {
+          ...login,
+          status: 'error',
+          completedAt: Date.now(),
+          error: cause instanceof Error ? cause.message : String(cause),
+        }
+      }
+    }
+    return publicLogin(login)
+  }
+
   const importCredential = async (body: Record<string, unknown>): Promise<unknown> => {
     loginController?.abort('importing Kiro credentials')
     loginController = undefined
@@ -531,9 +661,13 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
             if (path === 'login' && request.method === 'POST') {
               const body = await readJson(request)
               const method = optionalText(body.method) ?? 'builder-id'
-              const value = method === 'google' || method === 'github'
-                ? await beginSocialDevice(method, accountTarget(body))
-                : await beginDevice({ ...body, method })
+              const value = method === 'email'
+                ? await beginPortal(body)
+                : method === 'local'
+                  ? await beginLocal(body)
+                  : method === 'google' || method === 'github'
+                    ? await beginSocialDevice(method, accountTarget(body))
+                    : await beginDevice({ ...body, method })
               sendJson(response, 200, { ok: true, value })
               return
             }
@@ -553,6 +687,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               login = undefined
               await deleteDeviceCredentials(dependencies.managedDirectory)
               dependencies.discovery.clear()
+              dependencies.catalog.invalidate()
               dependencies.usage.clear()
               emitUpdated()
               sendJson(response, 200, { ok: true, value: await status() })
@@ -581,6 +716,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
                 return next
               })
               dependencies.discovery.clear()
+              dependencies.catalog.invalidate()
               dependencies.usage.clear()
               emitUpdated()
               sendJson(response, 200, { ok: true, value: await status() })
@@ -597,6 +733,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               await accountStore().activate(accountId, revision)
               await syncManagedCredentialFile(dependencies.managedDirectory)
               dependencies.discovery.clear()
+              dependencies.catalog.invalidate()
               dependencies.usage.clear()
               emitUpdated()
               sendJson(response, 200, { ok: true, value: await status() })
@@ -614,6 +751,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               await dropRegistration(dependencies.managedDirectory, removed.credential)
               await syncManagedCredentialFile(dependencies.managedDirectory)
               dependencies.discovery.clear()
+              dependencies.catalog.invalidate()
               dependencies.usage.clear()
               emitUpdated()
               sendJson(response, 200, { ok: true, value: await status() })
@@ -621,15 +759,10 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
             }
             if (path === 'models' && request.method === 'GET') {
               const connection = dependencies.options()
-              const cached = dependencies.discovery.current(connection)
+              const catalog = await dependencies.catalog.peek(connection)
               sendJson(response, 200, {
                 ok: true,
-                value: await modelPayload(
-                  cached ?? connection.models,
-                  cached === undefined ? 'configured' : 'live',
-                  dependencies.modelSettings,
-                  connection.maxContextWindow,
-                ),
+                value: await modelPayload(catalog, connection, dependencies.modelSettings),
               })
               return
             }
@@ -641,29 +774,30 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
                 return
               }
               const connection = dependencies.options()
-              const cached = dependencies.discovery.current(connection)
-              const models = cached ?? connection.models
-              await dependencies.modelSettings.setEnabledModelIds(body.enabledModelIds, models)
+              // The selection is constrained to the catalog the page was
+              // showing; reading the stored one keeps a checkbox click from
+              // shrinking the known ids down to the configured fallback.
+              const catalog = await dependencies.catalog.peek(connection)
+              await dependencies.modelSettings.setEnabledModelIds(
+                body.enabledModelIds,
+                catalog?.models ?? connection.models,
+              )
               emitUpdated()
               sendJson(response, 200, {
                 ok: true,
-                value: await modelPayload(
-                  models,
-                  cached === undefined ? 'configured' : 'live',
-                  dependencies.modelSettings,
-                  connection.maxContextWindow,
-                ),
+                value: await modelPayload(catalog, connection, dependencies.modelSettings),
               })
               return
             }
             if (path === 'models/refresh' && request.method === 'POST') {
               const connection = dependencies.options()
-              const models = await dependencies.discovery.list(connection, AbortSignal.timeout(15_000), true)
-              await dependencies.modelSettings.mergeCatalog(models)
-              emitUpdated()
+              // A failed refresh surfaces as an error and leaves the stored
+              // catalog untouched; merging and the update event happen in
+              // the catalog's onUpdate hook.
+              const catalog = await dependencies.catalog.refresh(connection)
               sendJson(response, 200, {
                 ok: true,
-                value: await modelPayload(models, 'live', dependencies.modelSettings, connection.maxContextWindow),
+                value: await modelPayload(catalog, connection, dependencies.modelSettings),
               })
               return
             }

@@ -3,6 +3,7 @@
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { KiroConnectionOptions } from './adapter.ts'
 import type { KiroAuthMethod, KiroToken } from './auth.ts'
+import { profileRegion } from './profile.ts'
 import { getJson, postJsonWithHeaders } from './transport.ts'
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000
@@ -279,8 +280,12 @@ export class KiroUsageService {
     const cached = this.cache.get(key)
     if (!force && cached !== undefined && cached.expiresAt > Date.now()) return cached.usage
 
-    const region = connection.region ?? token.region
     const profileArn = connection.profileArn ?? token.profileArn
+    // Derive region from the profile ARN the same way the adapter does,
+    // so usage queries reach the same endpoint as model requests.
+    const region = profileArn !== undefined
+      ? profileRegion(profileArn)
+      : connection.region ?? token.region
     const codeWhispererQuery = new URLSearchParams({
       isEmailRequired: 'true',
       origin: 'AI_EDITOR',

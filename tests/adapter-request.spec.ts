@@ -22,7 +22,7 @@ vi.mock('../src/transport.ts', () => ({
 }))
 
 const { conversationIdFor, KiroAdapter } = await import('../src/adapter.ts')
-const { frame, join, metadataFrame, textFrame } = await import('./frames.ts')
+const { frame, join, metadataFrame, textFrame, toolFrame } = await import('./frames.ts')
 type KiroConnectionOptions = import('../src/adapter.ts').KiroConnectionOptions
 
 const SOURCE = { kind: 'plugin' as const, plugin: 'test' }
@@ -169,6 +169,29 @@ describe('Kiro request identity and generation options', () => {
     const request = await turn(adapter(), { maxTokens: 999_999 })
     expect(request.additionalModelRequestFields)
       .toEqual({ output_config: { effort: 'high' }, max_tokens: 128_000 })
+  })
+
+  it('round-trips an MCP tool name Kiro would refuse', async () => {
+    const original = 'mcp__bat-mcp-oauth-function__bat-agg-metrics'
+    const wire = 'mcp__bat_mcp_oauth_function__bat_agg_metrics'
+    respond = () => okResponse(
+      toolFrame({ toolUseId: 't1', name: wire, input: '{}' }),
+      toolFrame({ toolUseId: 't1', stop: true }),
+    )
+    const chunks: { type: string; block?: { type: string; name?: string } }[] = []
+    for await (const chunk of adapter().stream({
+      provider: 'kiro',
+      model: 'claude-opus-5',
+      messages: [user('metrics?')],
+      tools: [{ name: original, description: 'Read metrics', parameters: { type: 'object', properties: {} } }],
+    } as GenerateOptions)) {
+      chunks.push(chunk as never)
+    }
+    const request = await Promise.resolve(JSON.parse(posted.at(-1)?.body ?? '{}') as WireRequest)
+    expect(request.conversationState.currentMessage.userInputMessage
+      .userInputMessageContext?.tools?.[0]?.toolSpecification.name).toBe(wire)
+    const call = chunks.find(chunk => chunk.type === 'block-end' && chunk.block?.type === 'tool-call')
+    expect(call?.block?.name).toBe(original)
   })
 
   it('maps a provider context-overflow rejection to the compaction trigger code', async () => {

@@ -21,6 +21,7 @@
  */
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import type { WireImageBlock, WireRequest } from './types.ts';
+import type { ToolNames } from './tool-names.ts';
 /**
  * Neutral user text standing in for an absent turn. Matches the installed Kiro
  * client's own `CONTINUE_MESSAGE_CONTENT`: ordinary conversational filler the
@@ -115,9 +116,11 @@ export type PreparedImages = ReadonlyMap<string, WireImageBlock>;
  * @param nativeEffort - live effort levels and their provider request path.
  * @param limits - live per-model generation bounds, when discovery supplied them.
  * @param images - wire images already read for this request, by attachment id.
+ * @param names - wire names resolved for this request's tools; derived from
+ *   `options.tools` when omitted, so a caller that must decode the answered
+ *   tool names can pass the same mapping instead of rebuilding it.
  * @returns the request body.
- * @throws `LlmError` when an image cannot be placed, a tool name is unusable,
- *   an effort is unsupported, a generation option is unusable, or there are no
- *   messages at all.
+ * @throws `LlmError` when an image cannot be placed, an effort is unsupported,
+ *   a generation option is unusable, or there are no messages at all.
  */
-export declare function serializeRequest(options: GenerateOptions, defaults: RequestDefaults, conversationId: string, profileArn?: string, nativeEffort?: NativeEffortConfig, limits?: ModelLimits, images?: PreparedImages): WireRequest;
+export declare function serializeRequest(options: GenerateOptions, defaults: RequestDefaults, conversationId: string, profileArn?: string, nativeEffort?: NativeEffortConfig, limits?: ModelLimits, images?: PreparedImages, names?: ToolNames): WireRequest;

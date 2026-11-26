@@ -83,6 +83,9 @@ export interface ManagedCredentials {
   startUrl?: string
   tokenEndpoint?: string
   scope?: string
+  /** Local Kiro CLI store this credential was reused from, when it was imported. */
+  storeFile?: string
+  storeKey?: string
 }
 
 /** Backward-compatible name for device-flow credentials. */
@@ -546,6 +549,8 @@ function credentialRecordOf(
     ...credentials.startUrl === undefined ? {} : { startUrl: credentials.startUrl },
     ...credentials.tokenEndpoint === undefined ? {} : { tokenEndpoint: credentials.tokenEndpoint },
     ...credentials.scope === undefined ? {} : { scope: credentials.scope },
+    ...credentials.storeFile === undefined ? {} : { storeFile: credentials.storeFile },
+    ...credentials.storeKey === undefined ? {} : { storeKey: credentials.storeKey },
   }
 }
 

@@ -74,6 +74,39 @@ describe('Kiro usage', () => {
     expect(service.current({ ...connection, profileArn: undefined })).toMatchObject({ plan: 'Kiro Pro' })
   })
 
+  it('queries the profile ARN region when it differs from the sign-in region', async () => {
+    // IAM Identity Center can sign in through a region (ap-southeast-1) that
+    // hosts no CodeWhisperer endpoint while the profile lives in us-east-1.
+    const getRequest = vi.fn().mockResolvedValue({ status: 200, body: response })
+    const service = new KiroUsageService({
+      resolveToken: async () => ({
+        accessToken: 'access',
+        region: 'ap-southeast-1',
+        expiresAt: Date.now() + 60_000,
+        authMethod: 'idc',
+        profileArn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/idc',
+      }),
+      getRequest,
+    })
+    await service.get({ ...connection, region: 'ap-southeast-1', profileArn: undefined }, new AbortController().signal)
+    const [url] = getRequest.mock.calls[0] as [string]
+    expect(url).toContain('codewhisperer.us-east-1.amazonaws.com/getUsageLimits?')
+    expect(url).not.toContain('ap-southeast-1')
+  })
+
+  it('falls back to the sign-in region when no profile ARN is known', async () => {
+    const getRequest = vi.fn().mockResolvedValue({ status: 200, body: response })
+    const service = new KiroUsageService({
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'eu-central-1', expiresAt: Date.now() + 60_000, authMethod: 'google',
+      }),
+      getRequest,
+    })
+    await service.get({ ...connection, region: undefined, profileArn: undefined }, new AbortController().signal)
+    const [url] = getRequest.mock.calls[0] as [string]
+    expect(url).toContain('codewhisperer.eu-central-1.amazonaws.com/getUsageLimits?')
+  })
+
   it('falls back to the AWS JSON operation and preserves the last successful cache', async () => {
     const getRequest = vi.fn()
       .mockResolvedValueOnce({ status: 403, body: {} })
