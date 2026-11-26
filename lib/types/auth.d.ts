@@ -18,6 +18,9 @@ export interface KiroToken {
     expiresAt: number;
     authMethod: KiroAuthMethod;
     profileArn?: string;
+    /** Local Kiro CLI store the credential came from; rotations are mirrored back. */
+    storeFile?: string;
+    storeKey?: string;
 }
 /** Everything token resolution needs, including injectable transports for tests and proxies. */
 export interface TokenSourceOptions {

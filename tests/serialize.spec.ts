@@ -214,10 +214,25 @@ describe('serializeRequest', () => {
     }])
   })
 
-  it('refuses a tool name the service rejects', () => {
-    expect(() => serialize([user('hi')], {
-      tools: [{ name: 'get-weather', description: 'd', parameters: {} }],
-    })).toThrowError(expect.objectContaining({ code: 'UNSUPPORTED_TOOL_NAME' }))
+  it('encodes a tool name the service would reject', () => {
+    const tool = { name: 'mcp__bat-mcp-oauth-function__bat-agg-metrics', description: 'd', parameters: {} }
+    const request = serialize([user('hi')], { tools: [tool] })
+    expect(currentOf(request).userInputMessageContext?.tools?.[0]?.toolSpecification.name)
+      .toBe('mcp__bat_mcp_oauth_function__bat_agg_metrics')
+  })
+
+  it('keeps a wire-encoded tool name in replayed history', () => {
+    const tool = { name: 'mcp__bat-mcp-oauth-function__bat-agg-metrics', description: 'd', parameters: {} }
+    const request = serialize([
+      user('metrics?'),
+      assistant('', [{ id: 'call-1', name: tool.name, args: '{}' }]),
+      toolResult('call-1', 'ok'),
+    ], { tools: [tool] })
+    expect(history(request).at(-1)).toMatchObject({
+      assistantResponseMessage: {
+        toolUses: [{ toolUseId: 'call-1', name: 'mcp__bat_mcp_oauth_function__bat_agg_metrics' }],
+      },
+    })
   })
 
   it('pairs a tool result with the call its history issued', () => {

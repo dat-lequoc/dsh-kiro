@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises'
 import {
   credentialDirectory,
   deleteDeviceCredentials,
+  defaultJsonTransport,
   discoverKiroProfileArn,
   getJson,
   importApiKey,
@@ -12,10 +13,14 @@ import {
   importRefreshToken,
   pollDeviceLogin,
   pollSocialDeviceLogin,
+  postForm,
   postJson,
   postJsonWithHeaders,
+  readLocalKiroCredentials,
+  refreshLocalKiroCredentials,
   saveManagedCredentials,
   startDeviceLogin,
+  startPortalLogin,
   startSocialDeviceLogin,
 } from '../lib/index.js'
 
@@ -63,6 +68,11 @@ try {
     console.log(`Usage: kiro-login [options]
 
 Methods:
+  --method email                  Work email → your organization's own SSO
+                                  (same portal flow as the Kiro IDE)
+  --method local                  Reuse the sign-in stored by kiro-cli login
+                                  already stored (KIRO_CLI_DATA_FILE overrides
+                                  the probed store; --data-file names one)
   --method builder-id             AWS Builder ID device login (default)
   --method idc --start-url URL    IAM Identity Center device login
   --method google|github          Google/GitHub device-code login
@@ -74,6 +84,7 @@ Methods:
 
 Common options:
   --region REGION                 AWS region (default: us-east-1)
+  --portal-url URL                 Kiro portal to sign in through (default: https://app.kiro.dev)
   --profile-arn ARN               Optional CodeWhisperer profile ARN
   --proxy URL                     HTTP/HTTPS proxy
   --no-open                       Do not open a browser automatically
@@ -129,6 +140,44 @@ Common options:
       credentials = result.credentials
       break
     }
+  } else if (method === 'email') {
+    const portalUrl = option('--portal-url') ?? process.env.KIRO_AUTH_PORTAL_URL
+    const session = await startPortalLogin(
+      portalUrl === undefined ? {} : { portalUrl },
+      defaultJsonTransport,
+      controller.signal,
+    )
+    try {
+      console.log(`Open ${session.portalUrl}`)
+      console.log('Enter your work email there; this terminal continues once the browser returns.')
+      if (!process.argv.includes('--no-open')) openBrowser(session.portalUrl)
+      const organization = await session.organization
+      if (organization.kind === 'external-idp') {
+        const idp = await session.beginExternalIdp(organization)
+        console.log(`Signing in through your organization's IdP: ${organization.issuerUrl}`)
+        console.log(`Open ${idp.authUrl}`)
+        if (idp.userCode !== undefined) console.log(`and enter the code ${idp.userCode}`)
+        if (!process.argv.includes('--no-open')) openBrowser(idp.authUrl)
+        credentials = await idp.credentials
+      } else if (organization.kind === 'social') {
+        throw new Error(
+          `this organization signs in with ${organization.provider}; rerun with --method ${organization.provider}`,
+        )
+      } else {
+        throw new Error(
+          'this organization uses IAM Identity Center; rerun with '
+          + `--method idc --start-url ${organization.startUrl} --region ${organization.region}`,
+        )
+      }
+    } finally {
+      await session.close()
+    }
+  } else if (method === 'local') {
+    const dataFile = option('--data-file')
+    const found = await readLocalKiroCredentials(dataFile === undefined ? {} : { file: dataFile })
+    credentials = await refreshLocalKiroCredentials(found.credentials, requestJson, controller.signal,
+      (url, form, requestSignal) => postForm(url, form, proxyUrl, requestSignal))
+    console.log(`Reusing the Kiro sign-in stored in ${found.file} (${found.key})`)
   } else if (method === 'refresh-token') {
     credentials = await importRefreshToken({
       refreshToken: option('--refresh-token') ?? process.env.KIRO_REFRESH_TOKEN ?? '',

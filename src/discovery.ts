@@ -134,7 +134,9 @@ export async function discoverKiroProfileArn(
       try {
         response = await request(
           attempt.url,
-          { maxResults: 50 },
+          // The service rejects anything above ten with REQUEST_BODY_INVALID,
+          // which used to leave every account without a profile ARN.
+          { maxResults: 10 },
           attempt.headers,
           connection.proxyUrl,
           signal,

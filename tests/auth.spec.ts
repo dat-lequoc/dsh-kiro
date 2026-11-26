@@ -4,11 +4,14 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clearTokenCache, resolveTokenFromDirectories } from '../src/auth.ts'
 import { kiroRequestEndpoint } from '../src/adapter.ts'
+import { readLocalKiroCredentials } from '../src/local-credentials.ts'
+import { createKiroStore, removeKiroStores } from './kiro-store.ts'
 
 const temporaryDirectories: string[] = []
 
 afterEach(async () => {
   clearTokenCache()
+  await removeKiroStores()
   await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, { recursive: true, force: true })))
 })
 
@@ -171,6 +174,50 @@ describe('Kiro token resolution', () => {
     })).resolves.toMatchObject({ accessToken: 'new-access', authMethod: 'external_idp' })
     expect(fetchForm.mock.calls[0]?.[0]).toBe('https://login.microsoftonline.com/tenant/oauth2/v2.0/token')
     expect(fetchForm.mock.calls[0]?.[1].get('refresh_token')).toBe('refresh')
+  })
+
+  it('mirrors a rotated external IdP token back into the local CLI store', async () => {
+    const store = await createKiroStore({
+      'kirocli:external-idp:token': {
+        access_token: 'expired-access',
+        refresh_token: 'refresh',
+        expires_at: new Date(0).toISOString(),
+        token_endpoint: 'https://login.microsoftonline.com/tenant/oauth2/v2.0/token',
+        client_id: 'client',
+        scopes: 'openid offline_access',
+      },
+    })
+    const directory = await credentialDirectory({
+      accessToken: 'expired-access',
+      refreshToken: 'refresh',
+      expiresAt: new Date(0).toISOString(),
+      region: 'us-east-1',
+      authMethod: 'external_idp',
+      clientId: 'client',
+      tokenEndpoint: 'https://login.microsoftonline.com/tenant/oauth2/v2.0/token',
+      scope: 'openid offline_access',
+      storeFile: store,
+      storeKey: 'kirocli:external-idp:token',
+    })
+    const fetchForm = vi.fn().mockResolvedValue({
+      status: 200,
+      body: { access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600 },
+    })
+
+    await resolveTokenFromDirectories([directory], {
+      expiryBufferMs: 0,
+      fetchJson: vi.fn(),
+      fetchForm,
+      writableDirectories: [directory],
+    })
+
+    const found = await readLocalKiroCredentials({ file: store })
+    expect(found.credentials).toMatchObject({
+      accessToken: 'new-access',
+      refreshToken: 'new-refresh',
+      clientId: 'client',
+      scope: 'openid offline_access',
+    })
   })
 
   it('treats a managed API key as long-lived without attempting refresh', async () => {

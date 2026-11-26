@@ -35,7 +35,7 @@ Built `lib/` artifacts are committed, so a GitHub install does not need to execu
 
 ## Features
 
-- Sign in from **Settings → Kiro** with AWS Builder ID, IAM Identity Center, Google, or GitHub.
+- Sign in from **Settings → Kiro** with a work email (your organization's own SSO), a credential the Kiro CLI or IDE already stored, AWS Builder ID, IAM Identity Center, Google, or GitHub.
 - Import a Kiro refresh token, API key, or CLIProxyAPI-compatible Microsoft external-IdP credential.
 - Keep several sign-ins at once — any mix of Builder ID, IAM Identity Center, Google, GitHub, imported tokens, API keys, and external-IdP credentials — and choose the active account from **Settings → Kiro**.
 - Sign in with the same methods from a terminal using the included `kiro-login` command.
@@ -56,6 +56,8 @@ Built `lib/` artifacts are committed, so a GitHub install does not need to execu
 
 Open **Settings → Kiro** and select a method:
 
+- **Work email (company SSO)** is the same sign-in the Kiro IDE performs. The plugin opens Kiro's portal on a loopback port, the portal resolves your work email to the organization server-side, and the login finishes at that organization's own IdP (for example Microsoft Entra ID). No start URL or tenant ID has to be typed, and no URL-scheme handler is installed: the IdP redirects back to `http://localhost:<port>/callback`. When an organization's IdP only trusts the Kiro IDE callback, or refuses a device-code exchange without its own client secret, the plugin cannot mint the token itself and says so — run `kiro-cli login` and pick **Local Kiro CLI credential** instead.
+- **Local Kiro CLI credential** reuses the sign-in `kiro-cli login` stored on this machine (`%LOCALAPPDATA%\Kiro-Cli\data.sqlite3` on Windows, `~/.local/share/kiro-cli/data.sqlite3` elsewhere), including its client registration, so the token can still be refreshed. Only the CLI store is read — the Kiro IDE keeps its token encrypted, so sign in through the CLI first. For company SSO, `kiro-cli logout` followed by `kiro-cli login` finishes as External IdP and brings the company profile (and its Claude models) with it. Point `KIRO_CLI_DATA_FILE` at a different store when several exist. A refresh the plugin performs is written back into that store, so the CLI keeps a usable sign-in instead of being invalidated by the rotation.
 - **AWS Builder ID** uses the standard device-code flow.
 - **IAM Identity Center** uses a device flow with your `https://<company>.awsapps.com/start` URL and region.
 - **Google / GitHub** uses Kiro's social device flow. The page shows a one-time `XXXX-XXXX` code and an `app.kiro.dev/account/device` authorization URL while the plugin waits for completion.
@@ -75,6 +77,9 @@ dsh plugin --profile web exec kiro-login
 Useful options:
 
 ```sh
+kiro-login --method email
+kiro-login --method local
+kiro-login --method local --data-file 'C:\Users\me\AppData\Local\Kiro-Cli\data.sqlite3'
 kiro-login --region eu-central-1
 kiro-login --method idc --start-url https://company.awsapps.com/start --region eu-central-1
 kiro-login --method github
@@ -86,7 +91,7 @@ kiro-login --no-open
 kiro-login --logout
 ```
 
-Run `kiro-login --help` for all options. `KIRO_REGION`, `KIRO_PROXY_URL`, `KIRO_START_URL`, `KIRO_REFRESH_TOKEN`, and `KIRO_API_KEY` are supported environment variables. Environment variables or a protected credential file are preferable to secret command-line arguments.
+Run `kiro-login --help` for all options. `KIRO_REGION`, `KIRO_PROXY_URL`, `KIRO_START_URL`, `KIRO_AUTH_PORTAL_URL`, `KIRO_CLI_DATA_FILE`, `KIRO_REFRESH_TOKEN`, and `KIRO_API_KEY` are supported environment variables. `--method email` prints the portal URL and continues once the browser returns; `--no-open` leaves the browser to you. `--method local` imports the sign-in the Kiro CLI or IDE stored on this machine and prints which store it read. Environment variables or a protected credential file are preferable to secret command-line arguments.
 
 ## Credentials
 
@@ -178,6 +183,8 @@ Do not wrap this override in `insert:`; the bundle already inserts `llm-kiro`.
 ## Request and response behavior
 
 Kiro has no separate system slot, so the harness system prompt is placed on the earliest user turn. Conversation history is normalized to Kiro's strict user/assistant alternation, tool schemas are attached to the current turn, and orphaned tool results are carried as text so compaction cannot leave an invalid tool-call reference.
+
+Tool names are part of the wire contract as well: Kiro accepts `/^[A-Za-z][A-Za-z0-9_]{0,63}$/`, while harness names are wider — an MCP tool arrives as `mcp__<server>__<tool>`, and both halves routinely carry hyphens. The adapter encodes every declared name into that shape (characters Kiro refuses become `_`, a name that would open on anything but a letter gains a `t_` prefix, and an over-long name keeps a readable head followed by a digest) and decodes the answered name back, so the harness still dispatches the tool it declared. The mapping is a pure function of the sorted tool list, which keeps it identical across turns — Kiro's prefix cache keys on the request text — and two names that would encode alike are separated by a digest rather than by list order.
 
 ### What this plugin does not do
 
@@ -336,8 +343,10 @@ KIRO_LIVE=1 KIRO_MODEL=claude-opus-5 KIRO_EFFORT=high npx vitest run tests/live-
 
 - Image content is currently rejected with `UNSUPPORTED_CONTENT`.
 - `temperature`, `topP`, and stop sequences have no accepted placement in Kiro's `generateAssistantResponse` request and are ignored.
-- Tool names must match `^[A-Za-z][A-Za-z0-9_]{0,63}$`.
+- Tool names are rewritten to match `^[A-Za-z][A-Za-z0-9_]{0,63}$` before they reach Kiro, so an MCP tool such as `mcp__server__tool-name` travels as `mcp__server__tool_name` and is reported back under its harness name. The model therefore sees the encoded spelling, which is the only one Kiro accepts.
 - SOCKS proxies are not supported.
+- Work-email sign-in needs the Kiro portal (`https://app.kiro.dev` by default, or `KIRO_AUTH_PORTAL_URL`) to be reachable. Organizations the portal answers with a social provider or IAM Identity Center are signed in through this plugin's existing device flow, so those two still require the browser step on `app.kiro.dev`.
+- Work-email sign-in can only finish where the organization's own IdP accepts a `http://localhost:<port>/callback` redirect. A tenant that registers only the Kiro IDE's `kiro://kiro.oauth/callback`, or that requires its client secret for the device-code exchange, is reported by name instead of being retried; after `kiro-cli login` (for company SSO: `kiro-cli logout` then `kiro-cli login`), pick **Local Kiro CLI credential**.
 
 ## Acknowledgements
 

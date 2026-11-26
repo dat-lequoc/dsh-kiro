@@ -59,6 +59,9 @@ export interface ManagedCredentials {
     startUrl?: string;
     tokenEndpoint?: string;
     scope?: string;
+    /** Local Kiro CLI store this credential was reused from, when it was imported. */
+    storeFile?: string;
+    storeKey?: string;
 }
 /** Backward-compatible name for device-flow credentials. */
 export type DeviceCredentials = ManagedCredentials;

@@ -29,7 +29,10 @@ import {
   syncManagedCredentialFile,
 } from './login.ts'
 import type { DeviceLoginPoll, ManagedCredentials, RefreshTokenOrigin } from './login.ts'
-import { getJson, postJson } from './transport.ts'
+import { readLocalKiroCredentials, refreshLocalKiroCredentials } from './local-credentials.ts'
+import { defaultJsonTransport, startPortalLogin } from './portal-login.ts'
+import type { PortalOrganization } from './portal-login.ts'
+import { getJson, postForm, postJson } from './transport.ts'
 import type { KiroUsageService } from './usage.ts'
 
 /** Everything the Kiro Web API needs from the running plugin. */
@@ -46,7 +49,7 @@ export interface WebDependencies {
 
 interface LoginFlow {
   status: 'pending' | 'complete' | 'error'
-  kind: 'device' | 'social-device'
+  kind: 'device' | 'social-device' | 'portal' | 'local'
   method: string
   /** Account this login replaces; absent when it adds one. */
   accountId?: string
@@ -464,6 +467,129 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
     return publicLogin(login)
   }
 
+  /**
+   * Sign in the way Kiro IDE does: let the Kiro portal resolve the work email to
+   * the organization, then finish at that organization's own IdP. Every other
+   * organization answer falls back to the device flow this plugin already runs,
+   * with the region and start URL the portal just resolved.
+   * @param body login request, optionally carrying a portal override.
+   * @returns the pending login the page polls.
+   */
+  const beginPortal = async (body: Record<string, unknown>): Promise<unknown> => {
+    loginController?.abort('starting a new Kiro login')
+    const controller = new AbortController()
+    loginController = controller
+    const target = accountTarget(body)
+    const portalUrl = optionalText(body.portalUrl)
+    const session = await startPortalLogin(
+      portalUrl === undefined ? {} : { portalUrl },
+      defaultJsonTransport,
+      controller.signal,
+    )
+    const flow: LoginFlow = {
+      status: 'pending',
+      kind: 'portal',
+      method: 'email',
+      authUrl: session.portalUrl,
+      startedAt: Date.now(),
+      ...target,
+    }
+    login = flow
+    void (async () => {
+      try {
+        const organization = await session.organization
+        if (organization.kind === 'external-idp') {
+          const idp = await session.beginExternalIdp(organization, { signal: controller.signal })
+          login = {
+            ...flow,
+            authUrl: idp.authUrl,
+            ...idp.userCode === undefined ? {} : { userCode: idp.userCode },
+          }
+          await finish(await idp.credentials, login, controller.signal)
+          return
+        }
+        const connection = dependencies.options()
+        const requestJson = (url: string, value: unknown, signal: AbortSignal) =>
+          postJson(url, value, connection.proxyUrl, signal)
+        if (organization.kind === 'social') {
+          const device = await startSocialDeviceLogin(organization.provider, requestJson, controller.signal)
+          login = { ...flow, authUrl: device.verificationUri, userCode: device.userCode }
+          monitorLogin(
+            device.intervalSeconds,
+            login,
+            controller,
+            () => pollSocialDeviceLogin(device, requestJson, controller.signal),
+          )
+          return
+        }
+        const device = await startDeviceLogin(organization.region, requestJson, controller.signal, {
+          authMethod: organization.provider === 'builderid' ? 'builder-id' : 'idc',
+          startUrl: organization.startUrl,
+        })
+        login = { ...flow, authUrl: device.verificationUri, userCode: device.userCode }
+        monitorLogin(
+          device.intervalSeconds,
+          login,
+          controller,
+          () => pollDeviceLogin(device, requestJson, controller.signal),
+        )
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          login = { ...flow, status: 'error', completedAt: Date.now(), error: safeError(error) }
+        }
+      } finally {
+        await session.close()
+      }
+    })()
+    return publicLogin(login)
+  }
+
+  /**
+   * Reuse the credential a local Kiro CLI or Kiro IDE sign-in already stored.
+   *
+   * An organization whose identity provider only trusts the Kiro IDE callback
+   * cannot finish the browser login here: the browser hands the code back to
+   * the IDE, which then holds the refreshable credential. Importing that
+   * credential keeps the sign-in possible without pasting tokens by hand.
+   * @param body login request, optionally naming the store to read.
+   * @returns the completed login the page polls.
+   */
+  const beginLocal = async (body: Record<string, unknown>): Promise<unknown> => {
+    loginController?.abort('starting a new Kiro login')
+    const controller = new AbortController()
+    loginController = controller
+    const target = accountTarget(body)
+    const dataFile = optionalText(body.dataFile)
+    login = {
+      status: 'pending',
+      kind: 'local',
+      method: 'local',
+      startedAt: Date.now(),
+      ...target,
+    }
+    try {
+      const found = await readLocalKiroCredentials(dataFile === undefined ? {} : { file: dataFile })
+      const connection = dependencies.options()
+      const credentials = await refreshLocalKiroCredentials(
+        found.credentials,
+        (url, value, requestSignal) => postJson(url, value, connection.proxyUrl, requestSignal),
+        controller.signal,
+        (url, form, requestSignal) => postForm(url, form, connection.proxyUrl, requestSignal),
+      )
+      await finish(credentials, login, controller.signal)
+    } catch (cause) {
+      if (!controller.signal.aborted) {
+        login = {
+          ...login,
+          status: 'error',
+          completedAt: Date.now(),
+          error: cause instanceof Error ? cause.message : String(cause),
+        }
+      }
+    }
+    return publicLogin(login)
+  }
+
   const importCredential = async (body: Record<string, unknown>): Promise<unknown> => {
     loginController?.abort('importing Kiro credentials')
     loginController = undefined
@@ -535,9 +661,13 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
             if (path === 'login' && request.method === 'POST') {
               const body = await readJson(request)
               const method = optionalText(body.method) ?? 'builder-id'
-              const value = method === 'google' || method === 'github'
-                ? await beginSocialDevice(method, accountTarget(body))
-                : await beginDevice({ ...body, method })
+              const value = method === 'email'
+                ? await beginPortal(body)
+                : method === 'local'
+                  ? await beginLocal(body)
+                  : method === 'google' || method === 'github'
+                    ? await beginSocialDevice(method, accountTarget(body))
+                    : await beginDevice({ ...body, method })
               sendJson(response, 200, { ok: true, value })
               return
             }

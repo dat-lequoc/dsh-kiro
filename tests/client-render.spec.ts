@@ -334,6 +334,51 @@ describe('the shipped settings page and composer chip', () => {
     expect(findAll(opened).some(element => element.type === 'button' && textOf(element).length > 0)).toBe(true)
     expect(calls.every(call => call.method === undefined || call.method === 'GET' || call.method === 'POST')).toBe(true)
   })
+  it('offers the work-email sign-in and starts it from the dialog', async () => {
+    const { tree, rerender, calls } = await renderPage(statusPayload([], null))
+    const add = findButton(tree, 'Sign in')
+    expect(add).toBeDefined()
+    await (add!.props['onClick'] as () => void)()
+
+    const chooser = rerender()
+    const emailChoice = findAll(chooser).find(element =>
+      element.type === 'button' && textOf(element).includes('Work email (company SSO)'))
+    expect(emailChoice).toBeDefined()
+    // The portal flow is the IDE's default, so it leads the list.
+    await (emailChoice!.props['onClick'] as () => void)()
+
+    const form = rerender()
+    expect(textOf(form)).toContain('Finish signing in in the browser window')
+    const start = findButton(form, 'Continue')
+    expect(start).toBeDefined()
+    await (start!.props['onClick'] as () => Promise<void>)()
+
+    expect(calls).toContainEqual({
+      path: '/login',
+      method: 'POST',
+      body: expect.objectContaining({ method: 'email' }),
+    })
+  })
+
+  it('offers the local Kiro credential and reuses it without a form', async () => {
+    const { tree, rerender, calls } = await renderPage(statusPayload([], null))
+    const add = findButton(tree, 'Sign in')
+    expect(add).toBeDefined()
+    await (add!.props['onClick'] as () => void)()
+
+    const chooser = rerender()
+    const localChoice = findAll(chooser).find(element =>
+      element.type === 'button' && textOf(element).includes('Local Kiro CLI credential'))
+    expect(localChoice).toBeDefined()
+    await (localChoice!.props['onClick'] as () => void)()
+
+    expect(calls).toContainEqual({
+      path: '/login',
+      method: 'POST',
+      body: expect.objectContaining({ method: 'local' }),
+    })
+  })
+
   /** One usage payload shaped like the Host's. */
   function usagePayload(remainingPercent: number, extra: Record<string, unknown> = {}): Record<string, unknown> {
     return {

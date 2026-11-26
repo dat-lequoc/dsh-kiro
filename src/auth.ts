@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import { KiroAccountStore } from './accounts.ts'
 import { assertMicrosoftTokenEndpoint } from './external-idp.ts'
+import { writeLocalKiroToken } from './local-credentials.ts'
 import { assertKiroProfileArn } from './profile.ts'
 import { assertKiroRegion } from './region.ts'
 
@@ -57,6 +58,9 @@ interface TokenFile {
   profileArn?: string
   authMethod: KiroAuthMethod
   startUrl?: string
+  /** Local Kiro CLI store this token was imported from, so rotations reach it. */
+  storeFile?: string
+  storeKey?: string
   raw: Record<string, unknown>
 }
 
@@ -83,6 +87,9 @@ export interface KiroToken {
   expiresAt: number
   authMethod: KiroAuthMethod
   profileArn?: string
+  /** Local Kiro CLI store the credential came from; rotations are mirrored back. */
+  storeFile?: string
+  storeKey?: string
 }
 
 /** Everything token resolution needs, including injectable transports for tests and proxies. */
@@ -197,6 +204,8 @@ function normalizeTokenFile(value: unknown): TokenFile {
   const region = text(source.region)
   const profileArn = text(source.profileArn ?? source.profile_arn)
   const startUrl = text(source.startUrl ?? source.start_url)
+  const storeFile = text(source.storeFile ?? source.store_file)
+  const storeKey = text(source.storeKey ?? source.store_key)
   return {
     ...accessToken === undefined ? {} : { accessToken },
     ...refreshToken === undefined ? {} : { refreshToken },
@@ -209,6 +218,8 @@ function normalizeTokenFile(value: unknown): TokenFile {
     ...profileArn === undefined ? {} : { profileArn },
     authMethod: inferAuthMethod(source.authMethod ?? source.auth_method, source),
     ...startUrl === undefined ? {} : { startUrl },
+    ...storeFile === undefined ? {} : { storeFile },
+    ...storeKey === undefined ? {} : { storeKey },
     raw: source,
   }
 }
@@ -325,6 +336,25 @@ async function refresh(
   const parsed = parseRefresh(response.body, refreshToken)
   const existingProfile = token.profileArn === undefined ? undefined : assertKiroProfileArn(token.profileArn)
   const refreshedProfile = parsed.profileArn ?? existingProfile
+  if (token.storeFile !== undefined && token.storeKey !== undefined) {
+    try {
+      await writeLocalKiroToken({
+        file: token.storeFile,
+        key: token.storeKey,
+        accessToken: parsed.accessToken,
+        refreshToken: parsed.refreshToken,
+        expiresAt: new Date(parsed.expiresAt).toISOString(),
+        ...token.scope === undefined ? {} : { scope: token.scope },
+      })
+    } catch (error: unknown) {
+      // The fresh token still serves this request; the store catches up on the
+      // next `kiro-cli login`, so a failure here must not fail inference.
+      console.warn(
+        'Kiro could not keep the local CLI store in sync:',
+        error instanceof Error ? error.message : String(error),
+      )
+    }
+  }
   return {
     refreshToken: parsed.refreshToken,
     token: {
@@ -333,6 +363,8 @@ async function refresh(
       expiresAt: parsed.expiresAt,
       authMethod: token.authMethod,
       ...refreshedProfile === undefined ? {} : { profileArn: refreshedProfile },
+      ...token.storeFile === undefined ? {} : { storeFile: token.storeFile },
+      ...token.storeKey === undefined ? {} : { storeKey: token.storeKey },
     },
   }
 }

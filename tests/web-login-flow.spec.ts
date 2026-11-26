@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createKiroStore, removeKiroStores } from './kiro-store.ts'
 
 /**
  * The device-authorization endpoints, answered locally so the login flow can be
@@ -138,6 +139,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   delete process.env.DSH_HOME
+  await removeKiroStores()
   await rm(home, { recursive: true, force: true })
 })
 
@@ -183,6 +185,57 @@ describe('Kiro device login through the Web API', () => {
       writableDirectories: [directory],
     })
     expect(resolved).toMatchObject({ accessToken: 'access-token', authMethod: 'builder-id' })
+  })
+
+  it('imports the sign-in the local Kiro CLI already stored', async () => {
+    const file = await createKiroStore({
+      'kirocli:odic:token': {
+        access_token: 'local-access-token',
+        refresh_token: 'local-refresh-token',
+        expires_at: '2099-01-01T00:00:00Z',
+        region: 'ap-southeast-1',
+        start_url: 'https://tripsso.awsapps.com/start',
+        profile_arn: 'arn:aws:codewhisperer:ap-southeast-1:319585546877:profile/HDYWH4GRKMUY',
+        scopes: ['codewhisperer:completions'],
+      },
+      'kirocli:odic:device-registration': {
+        client_id: 'local-client',
+        client_secret: 'local-secret',
+        region: 'ap-southeast-1',
+      },
+    })
+
+    const started = await call('POST', '/kiro/api/login', { method: 'local', dataFile: file })
+
+    expect(started.status).toBe(200)
+    expect(started.value.value).toMatchObject({ status: 'complete', kind: 'local', method: 'local' })
+    const status = (await call('GET', '/kiro/api/status')).value.value
+    expect(status).toMatchObject({ authenticated: true, authMethod: 'idc', region: 'ap-southeast-1' })
+  })
+
+  it('reports a missing local store instead of leaving the page pending', async () => {
+    const started = await call('POST', '/kiro/api/login', {
+      method: 'local',
+      dataFile: join(home, 'missing', 'data.sqlite3'),
+    })
+
+    expect(started.status).toBe(200)
+    expect(started.value.value).toMatchObject({ status: 'error', kind: 'local', method: 'local' })
+    expect(started.value.value.error).toMatch(/KIRO_CLI_DATA_FILE/u)
+    expect((await call('GET', '/kiro/api/status')).value.value.login.status).toBe('error')
+  })
+
+  it('answers a work-email sign-in with the portal URL the page must open', async () => {
+    const started = await call('POST', '/kiro/api/login', { method: 'email' })
+    expect(started.status).toBe(200)
+    expect(started.value.value).toMatchObject({ status: 'pending', kind: 'portal', method: 'email' })
+    const portal = new URL(started.value.value.authUrl)
+    expect(portal.origin + portal.pathname).toBe('https://app.kiro.dev/signin')
+    expect(portal.searchParams.get('redirect_from')).toBe('KiroIDE')
+    expect(portal.searchParams.get('redirect_uri')).toMatch(/^http:\/\/localhost:\d+$/u)
+    expect((await call('GET', '/kiro/api/status')).value.value.login)
+      .toMatchObject({ status: 'pending', kind: 'portal', method: 'email' })
+    await call('POST', '/kiro/api/login/cancel')
   })
 
   it('cancels a pending login so the page stops showing its code', async () => {
